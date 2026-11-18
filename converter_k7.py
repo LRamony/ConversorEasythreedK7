@@ -128,12 +128,16 @@ TIPOS_SUPORTE: dict[str, dict[str, str]] = {
 SUPORTE_PADRAO = "Normal - Grade"
 
 # Aplicado somente quando a opção "Suportes mais finos" está ligada e o tipo
-# escolhido realmente gera suporte. Vale para suporte normal e para árvore.
-# O mínimo precisa ficar acima da altura de camada do perfil (0,2 mm), senão
-# o PrusaSlicer recusa a extrusion com "too low to be printable".
-SUPORTE_FINO_PADRAO_MM = 0.3
-SUPORTE_FINO_MIN_MM = 0.22
-SUPORTE_FINO_MAX_MM = 0.5
+# escolhido realmente gera suporte. O valor informado na interface é o
+# DIÂMETRO DO RAMO/ÁRVORE, não a largura de extrusão.
+SUPORTE_FINO_PADRAO_MM = 0.9
+SUPORTE_FINO_MIN_MM = 0.6
+SUPORTE_FINO_MAX_MM = 3.0
+
+# A extrusão é derivada do diâmetro e precisa respeitar o perfil: acima da
+# altura de camada (0,2 mm) e abaixo de 3x o bico (0,4 mm).
+EXTRUSAO_SUPORTE_MIN_MM = 0.22
+EXTRUSAO_SUPORTE_MAX_MM = 0.5
 
 LogFn = Callable[[str, str], None]
 
@@ -148,20 +152,20 @@ class ErroConversao(RuntimeError):
 
 
 def validar_suporte_fino_mm(valor: float, log: LogFn = _sem_log) -> float:
-    """Valida a espessura desejada para o suporte fino."""
+    """Valida o diâmetro desejado para o ramo da árvore de suporte."""
     try:
-        espessura = float(valor)
+        diametro = float(valor)
     except (TypeError, ValueError) as exc:
-        raise ErroConversao("Informe uma espessura válida para o suporte fino.") from exc
-    if not math.isfinite(espessura):
-        raise ErroConversao("A espessura do suporte fino deve ser um número válido.")
+        raise ErroConversao("Informe um diâmetro válido para o suporte fino.") from exc
+    if not math.isfinite(diametro):
+        raise ErroConversao("O diâmetro do suporte fino deve ser um número válido.")
 
-    arredondada = round(espessura, 2)
+    arredondada = round(diametro, 2)
     limitado = min(max(arredondada, SUPORTE_FINO_MIN_MM), SUPORTE_FINO_MAX_MM)
     if limitado != arredondada:
         log(
             "warn",
-            f"Espessura de suporte {espessura:g} mm ajustada para {limitado:g} mm "
+            f"Diâmetro de suporte {diametro:g} mm ajustado para {limitado:g} mm "
             f"(intervalo: {SUPORTE_FINO_MIN_MM:g} a {SUPORTE_FINO_MAX_MM:g} mm).",
         )
     return limitado
@@ -172,8 +176,11 @@ def _mm(valor: float) -> str:
     return f"{round(valor + 1e-9, 2):g}"
 
 
-def parametros_suporte_fino(espessura_mm: float) -> dict[str, str]:
-    """Monta as chaves do PrusaSlicer a partir da espessura escolhida.
+def parametros_suporte_fino(diametro_mm: float) -> dict[str, str]:
+    """Monta as chaves do PrusaSlicer a partir do diâmetro do ramo escolhido.
+
+    O número digitado na interface é o diâmetro da árvore. A largura de
+    extrusão é derivada dele (≈ diâmetro / 3) e limitada pelo bico/camada.
 
     Além de afinar a extrusão, esta opção impede que a árvore engrosse:
     - ``support_tree_branch_diameter_angle = 0`` mantém o ramo uniforme da
@@ -183,16 +190,21 @@ def parametros_suporte_fino(espessura_mm: float) -> dict[str, str]:
       pontos de contato com a peça, facilitando a remoção;
     - ``support_material_with_sheath = 0`` evita a bainha extra no suporte.
 
-    O PrusaSlicer exige ponta >= extrusão e ramo >= 2x a extrusão. Usamos
-    1,5x e 3x, respectivamente, para ficar dentro da validação com folga.
+    O PrusaSlicer exige ponta >= extrusão e ramo >= 2x a extrusão, então a
+    ponta fica em 50% do diâmetro e a extrusão em no máximo 1/3 dele.
     """
-    espessura = validar_suporte_fino_mm(espessura_mm)
+    diametro = validar_suporte_fino_mm(diametro_mm)
+    extrusao = min(
+        max(diametro / 3, EXTRUSAO_SUPORTE_MIN_MM), EXTRUSAO_SUPORTE_MAX_MM
+    )
+    extrusao = round(extrusao, 2)
+    ponta = min(max(round(diametro * 0.5 + 1e-9, 2), extrusao), diametro)
     return {
-        "support_material_extrusion_width": _mm(espessura),
-        "support_material_interface_extrusion_width": _mm(espessura),
+        "support_material_extrusion_width": _mm(extrusao),
+        "support_material_interface_extrusion_width": _mm(extrusao),
         "support_material_with_sheath": "0",
-        "support_tree_branch_diameter": _mm(espessura * 3),
-        "support_tree_tip_diameter": _mm(espessura * 1.5),
+        "support_tree_branch_diameter": _mm(diametro),
+        "support_tree_tip_diameter": _mm(ponta),
         "support_tree_branch_diameter_angle": "0",
         "support_tree_branch_diameter_double_wall": "0",
         "support_tree_branch_distance": "2",

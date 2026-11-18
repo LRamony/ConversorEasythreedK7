@@ -260,7 +260,7 @@ def testar_tipo_suporte(diretorio: Path) -> None:
     assert texto.count("support_material = ") == 1
 
     fino = dict(conv.TIPOS_SUPORTE["Árvore - Orgânico"])
-    fino.update(conv.parametros_suporte_fino(0.35))
+    fino.update(conv.parametros_suporte_fino(1.05))
     destino_fino = diretorio / "temporario_fino.ini"
     conv._gravar_ini_com_suporte(perfil, fino, destino_fino)
     texto_fino = destino_fino.read_text(encoding="utf-8")
@@ -276,7 +276,12 @@ def testar_tipo_suporte(diretorio: Path) -> None:
     assert texto_fino.count("support_material_extrusion_width = ") == 1
     assert conv.validar_suporte_fino_mm(9) == conv.SUPORTE_FINO_MAX_MM
     assert conv.validar_suporte_fino_mm(-1) == conv.SUPORTE_FINO_MIN_MM
-    assert conv.SUPORTE_FINO_MIN_MM > 0.2  # acima da altura de camada do perfil
+    extrusao_min = float(
+        conv.parametros_suporte_fino(conv.SUPORTE_FINO_MIN_MM)[
+            "support_material_extrusion_width"
+        ]
+    )
+    assert extrusao_min > 0.2  # acima da altura de camada do perfil
     print("  [ok] perfil temporario afina a arvore e impede tronco grosso")
 
     modelo = diretorio / "suporte.3mf"
@@ -298,7 +303,7 @@ def testar_tipo_suporte(diretorio: Path) -> None:
             config_ini=conv.CONFIG_PADRAO,
             tipo_suporte="Árvore - Orgânico",
             suporte_fino=True,
-            suporte_fino_mm=0.35,
+            suporte_fino_mm=1.05,
         )
     assert any("support_material_style = organic" in trecho for trecho in vistos)
     assert any("support_material_extrusion_width = 0.35" in trecho for trecho in vistos)
@@ -592,24 +597,25 @@ def testar_gui() -> None:
             assert app_modulo.NOME_DESENVOLVEDOR in textos
             dialogo.destroy()
 
-            # Tamanho, quantidade e suporte fino voltam como padrão na próxima
-            # execução porque são gravados ao fechar (e ao iniciar a conversão).
+            # Tamanho, quantidade e diâmetro do suporte voltam como padrão na
+            # próxima execução porque são gravados ao fechar (e ao converter).
             janela.var_tamanho.set(72.5)
             janela.var_quantidade.set(3)
             janela.var_suporte_fino.set(True)
-            janela.var_suporte_fino_mm.set(0.4)
+            janela.var_suporte_fino_mm.set(1.5)
             janela._salvar_config()
             dados = json.loads(arquivo_prefs.read_text(encoding="utf-8"))
             assert dados["tamanho"] == 72.5
             assert dados["quantidade"] == 3
             assert dados["suporte_fino"] is True
-            assert dados["suporte_fino_mm"] == 0.4
+            assert dados["suporte_fino_mm"] == 1.5
             assert janela._quantidade_atual() == 3
-            assert janela._espessura_suporte_fino() == 0.4
+            assert janela._diametro_suporte_fino() == 1.5
             janela.update()
             janela.destroy()
 
-            # Nova execução: os valores gravados voltam como padrão.
+            # Nova execução: os valores gravados voltam como padrão, sem
+            # arredondar para 0,5 mm como acontecia com a semântica antiga.
             janela2 = app_modulo.AppK7()
             janela2.withdraw()
             janela2.update_idletasks()
@@ -617,16 +623,30 @@ def testar_gui() -> None:
             assert janela2.var_tamanho.get() == 72.5
             assert janela2.var_quantidade.get() == 3
             assert janela2.var_suporte_fino.get() is True
-            assert janela2.var_suporte_fino_mm.get() == 0.4
+            assert janela2.var_suporte_fino_mm.get() == 1.5
 
             janela2._reset_suporte_fino()
             assert janela2.var_suporte_fino.get() is False
             assert janela2.var_suporte_fino_mm.get() == conv.SUPORTE_FINO_PADRAO_MM
             janela2.update()
             janela2.destroy()
+
+            # Migração: um valor antigo (largura de extrusão) vira diâmetro.
+            dados_antigos = json.loads(arquivo_prefs.read_text(encoding="utf-8"))
+            dados_antigos["suporte_fino_mm"] = 0.3
+            arquivo_prefs.write_text(
+                json.dumps(dados_antigos, indent=2, ensure_ascii=False),
+                encoding="utf-8",
+            )
+            janela3 = app_modulo.AppK7()
+            janela3.withdraw()
+            janela3.update_idletasks()
+            janela3.update()
+            assert janela3.var_suporte_fino_mm.get() == 0.9
+            janela3.destroy()
     print("  [ok] interface ttkbootstrap constroi e fecha sem erros")
     print("  [ok] abas Configuracoes/Calc, suporte fino, Reset e documentacao presentes")
-    print("  [ok] ultimo tamanho/quantidade/espressura salvos como padrao")
+    print("  [ok] ultimo tamanho/quantidade/diametro salvos como padrao")
 
 
 def main() -> None:

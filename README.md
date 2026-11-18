@@ -46,11 +46,11 @@ Na aba **Converter**:
 
 1. Em **Arquivo de entrada**, escolha o filtro (`3MF e STL`, `Somente 3MF` ou `Somente STL`) e clique em **Procurar...**;
 2. Defina a **medida máxima** (campo numérico ou slider) e a **quantidade de peças**. A prévia mostra dimensões originais, fator de escala, dimensões do conjunto e o tamanho de cada peça;
-3. Em **Tipo de suporte**, escolha entre **sem suporte**, as variantes **normais** (grade, linhas, quadrados, colmeia, snug) ou as variantes **árvore/orgânicas** (padrão, reforçada, econômica). À direita do seletor, marque **Suportes mais finos** e informe a espessura em mm (padrão `0,3`);
+3. Em **Tipo de suporte**, escolha entre **sem suporte**, as variantes **normais** (grade, linhas, quadrados, colmeia, snug) ou as variantes **árvore/orgânicas** (padrão, reforçada, econômica). À direita do seletor, marque **Suportes mais finos** e informe o **diâmetro da árvore em mm** (padrão `0,9`);
 4. Opcionalmente escolha a **pasta de saída** (em branco = mesma pasta do modelo). O nome gerado é `<nome>_K7.gcode`;
 5. Clique em **Converter para G-code**.
 
-O **último tamanho máximo escolhido**, a quantidade de peças e a espessura de suporte fino são salvos quando você converte ou fecha o programa, e voltam como padrão na próxima execução. O botão **Reset** ao lado do campo de espessura restaura o padrão de fábrica (opção desligada e `0,3 mm`).
+O **último tamanho máximo escolhido**, a quantidade de peças e o **diâmetro do suporte fino** são salvos quando você converte ou fecha o programa, e voltam como padrão na próxima execução. O botão **Reset** ao lado do campo restaura o padrão de fábrica (opção desligada e `0,9 mm` de diâmetro).
 
 ### Tipo de suporte
 
@@ -63,18 +63,22 @@ O seletor da aba **Converter** escolhe o estilo de suporte. O programa **não al
 
 ### Suportes mais finos
 
-Ao marcar **Suportes mais finos**, o valor informado em mm (`0,22` a `0,50`, padrão `0,30`) controla a extrusão **e** a grossura real da árvore. O limite inferior passou a `0,22 mm` porque o perfil usa camadas de `0,20 mm` — valores menores são recusados pelo PrusaSlicer.
+Ao marcar **Suportes mais finos**, o valor informado é o **diâmetro do ramo/árvore** (`0,6` a `3,0 mm`, padrão `0,9 mm`). A largura de extrusão é derivada automaticamente desse diâmetro (≈ `diâmetro / 3`, limitada a `0,22–0,50 mm` para respeitar o bico de `0,4 mm` e as camadas de `0,20 mm`).
+
+Por exemplo, com `1,5 mm`: extrusão `0,50 mm`, ramo `1,5 mm`, ponta `0,75 mm`.
 
 O que muda no `.ini` temporário:
 
-- `support_material_extrusion_width` e `support_material_interface_extrusion_width` = valor escolhido;
+- `support_tree_branch_diameter` = valor escolhido e `support_tree_tip_diameter` = 50% dele;
+- `support_material_extrusion_width` e `support_material_interface_extrusion_width` = extrusão derivada;
 - `support_material_with_sheath = 0` (sem bainha extra);
-- `support_tree_branch_diameter` = **3×** o valor e `support_tree_tip_diameter` = **1,5×** (com `0,35 mm`: `1.05` e `0.53`). Isso atende à validação do PrusaSlicer: ponta ≥ extrusão e ramo ≥ 2× extrusão;
 - `support_tree_branch_diameter_angle = 0` — **o ponto principal**: o tronco não engrossa progressivamente até a base como no padrão `5°`;
 - `support_tree_branch_diameter_double_wall = 0` — desativa paredes duplas;
 - `support_tree_branch_distance = 2` e `support_tree_top_rate = 5%` — menos pontos de contato com a peça, mais fácil de soltar e menos material.
 
-Vale para suporte normal e árvore, não altera o seu perfil e não tem efeito com **Sem suporte**. O último valor é lembrado; **Reset** volta para `0,30 mm` com a opção desligada.
+Vale para suporte normal e árvore, não altera o seu perfil e não tem efeito com **Sem suporte**. O último valor é lembrado; **Reset** volta para `0,90 mm` com a opção desligada.
+
+> Se você usava a versão anterior, valores salvos até `0,50 mm` eram larguras de extrusão. Eles são convertidos automaticamente para diâmetro multiplicando por 3 (por exemplo, `0,30` vira `0,90`). Valores acima de `0,50 mm` já eram tratados como diâmetro e permanecem intactos.
 
 ### Várias peças na mesma mesa
 

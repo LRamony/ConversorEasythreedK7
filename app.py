@@ -45,6 +45,7 @@ from converter_k7 import (
     LARGURA_MESA_MM,
     LIMITE_SEGURANCA_MM,
     PROFUNDIDADE_MESA_MM,
+    EXTRUSAO_SUPORTE_MAX_MM,
     QUANTIDADE_MAXIMA,
     SUPORTE_FINO_MAX_MM,
     SUPORTE_FINO_MIN_MM,
@@ -277,12 +278,16 @@ class AppK7(ttk.Window):
         self.var_suporte.set(suporte if suporte in TIPOS_SUPORTE else SUPORTE_PADRAO)
         self.var_suporte_fino.set(bool(self.config_salva.get("suporte_fino", False)))
         try:
-            espessura = float(self.config_salva["suporte_fino_mm"])
-            self.var_suporte_fino_mm.set(
-                min(max(espessura, SUPORTE_FINO_MIN_MM), SUPORTE_FINO_MAX_MM)
-            )
+            diametro = float(self.config_salva["suporte_fino_mm"])
         except (KeyError, TypeError, ValueError, tk.TclError):
-            self.var_suporte_fino_mm.set(SUPORTE_FINO_PADRAO_MM)
+            diametro = SUPORTE_FINO_PADRAO_MM
+        # Migração: versões antigas guardavam a largura de extrusão (<= 0,5).
+        # O campo agora é o diâmetro do ramo, então convertemos esses valores.
+        if diametro <= EXTRUSAO_SUPORTE_MAX_MM:
+            diametro *= 3
+        self.var_suporte_fino_mm.set(
+            min(max(round(diametro, 2), SUPORTE_FINO_MIN_MM), SUPORTE_FINO_MAX_MM)
+        )
 
         def restaurar(chave: str, variavel: tk.Variable) -> None:
             try:
@@ -482,7 +487,7 @@ class AppK7(ttk.Window):
             cartao_suporte,
             from_=SUPORTE_FINO_MIN_MM,
             to=SUPORTE_FINO_MAX_MM,
-            increment=0.05,
+            increment=0.1,
             textvariable=self.var_suporte_fino_mm,
             width=6,
         )
@@ -799,12 +804,13 @@ class AppK7(ttk.Window):
         self._agendar_analise()
 
     def _reset_suporte_fino(self) -> None:
-        """Volta ao estado de fábrica: opção desligada e 0,3 mm."""
+        """Volta ao estado de fábrica: opção desligada e 0,9 mm de diâmetro."""
         self.var_suporte_fino.set(False)
         self.var_suporte_fino_mm.set(SUPORTE_FINO_PADRAO_MM)
         self._escrever_log(
             "success",
-            f"Suporte fino restaurado para o padrão ({SUPORTE_FINO_PADRAO_MM:g} mm, desligado).",
+            "Suporte fino restaurado para o padrão "
+            f"({SUPORTE_FINO_PADRAO_MM:g} mm de diâmetro, desligado).",
         )
 
     def _abrir_url(self, url: str) -> None:
@@ -1147,7 +1153,7 @@ class AppK7(ttk.Window):
         except (ValueError, TypeError, tk.TclError):
             return 1
 
-    def _espessura_suporte_fino(self) -> float:
+    def _diametro_suporte_fino(self) -> float:
         try:
             valor = float(self.var_suporte_fino_mm.get())
         except (ValueError, TypeError, tk.TclError):
@@ -1222,7 +1228,7 @@ class AppK7(ttk.Window):
                 self.var_suporte.get(),
                 self._quantidade_atual(),
                 self.var_suporte_fino.get(),
-                self._espessura_suporte_fino(),
+                self._diametro_suporte_fino(),
             ),
             daemon=True,
         ).start()
