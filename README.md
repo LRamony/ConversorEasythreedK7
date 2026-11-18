@@ -17,6 +17,7 @@ Interface gráfica feita com **ttkbootstrap** sobre o tkinter. Ela:
 |---|---|
 | `app.py` | Interface gráfica (ttkbootstrap) |
 | `converter_k7.py` | Núcleo de conversão, reutilizável sem GUI |
+| `calculo.py` | Leitura do G-code e cálculo de custo/preço da aba Calc |
 | `bootstrap.py` | Verificação inicial: detecta/instala o PrusaSlicer e gera avisos com links |
 | `k7_config.ini` | Perfil da K7 (mesa 100³, bico 0,4, 195/200 °C, mesa 0 °C, suportes automáticos) |
 | `test_pipeline.py` | Testes do pipeline e smoke test da interface |
@@ -44,8 +45,35 @@ Na aba **Converter**:
 
 1. Em **Arquivo de entrada**, escolha o filtro (`3MF e STL`, `Somente 3MF` ou `Somente STL`) e clique em **Procurar...**;
 2. Defina a **medida máxima** (campo numérico ou slider). A prévia mostra dimensões originais, fator de escala e dimensões finais;
-3. Opcionalmente escolha a **pasta de saída** (em branco = mesma pasta do modelo). O nome gerado é `<nome>_K7.gcode`;
-4. Clique em **Converter para G-code**.
+3. Em **Tipo de suporte**, escolha entre **sem suporte**, as variantes **normais** (grade, linhas, quadrados, colmeia, snug) ou as variantes **árvore/orgânicas** (padrão, reforçada, econômica);
+4. Opcionalmente escolha a **pasta de saída** (em branco = mesma pasta do modelo). O nome gerado é `<nome>_K7.gcode`;
+5. Clique em **Converter para G-code**.
+
+### Tipo de suporte
+
+O seletor da aba **Converter** escolhe o estilo de suporte. O programa **não altera** o seu `k7_config.ini`: ele copia o perfil para um arquivo temporário, aplica as chaves do PrusaSlicer (`support_material_style`, `support_material_angling`, etc.) e apaga esse arquivo ao final da conversão.
+
+- **Normal**: grade, linhas, quadrados, colmeia ou ajustado (snug);
+- **Árvore (orgânico)**: padrão, reforçado (mais vertical/mais colunas) ou econômico (mais inclinado, menos material).
+
+### Aba Calc — quanto cobrar pela impressão
+
+A aba **Calc** lê o início e o rodapé do G-code gerado pelo PrusaSlicer (tempo estimado e filamento usado) e calcula o preço. O PrusaSlicer grava essas estatísticas no fim do arquivo, junto com a lista de parâmetros. Você informa a **margem de lucro (%)**; os custos já vêm com valores padrão editáveis:
+
+| Custo | Padrão |
+|---|---|
+| Filamento | R$ 100,00/kg |
+| Energia elétrica | R$ 0,92/kWh × 60 W |
+| Desgaste/manutenção | R$ 1,50/h |
+| Mão de obra | R$ 15,00/h |
+| Acabamento | R$ 2,00/peça |
+| Embalagem | R$ 1,50/peça |
+
+Após cada conversão bem-sucedida o cálculo é feito automaticamente com o G-code recém-gerado, sem botão. Para analisar um arquivo antigo, use **Procurar...**. Qualquer alteração em margem, tempo ou custos recalcula na hora. O resultado mostra cada custo, o custo total, o **preço final** com a margem e o lucro. Se o G-code não informar o peso do filamento, ele é estimado a partir dos mm usados (PLA 1,75 mm).
+
+O campo **Tempo de impressão (h)** mostra o tempo lido do G-code. Se o arquivo não informar o tempo, ele usa **1,5 h** por padrão e pode ser editado: o valor digitado passa a ter prioridade sobre o do G-code até você escolher outro arquivo. A prévia da peça também é automática (ao escolher o arquivo, apertar Enter ou mover o slider de escala), por isso não há mais botão "Calcular prévia".
+
+Se as linhas `; estimated printing time ...` e `; filament used ...` não existirem, ative **Verbose G-code** no PrusaSlicer em *Configurações de impressão > Opções de saída* e fatie novamente — ou apenas informe o tempo no campo editável. A aba também aceita os formatos `HH:MM:SS`, `2h 30m`, `1d 2h 3m 4s` e segundos puros (`;TIME:38846`).
 
 ### Verificação automática ao iniciar
 

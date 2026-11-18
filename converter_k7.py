@@ -64,6 +64,61 @@ CANDIDATOS_PRSUSA_CLI = (
     Path("/Applications/PrusaSlicer.app/Contents/MacOS/PrusaSlicer"),
 )
 
+# Tipos de suporte oferecidos na interface. Cada opção sobrescreve apenas
+# estas chaves num .ini temporário, sem alterar o perfil do usuário.
+TIPOS_SUPORTE: dict[str, dict[str, str]] = {
+    "Sem suporte": {
+        "support_material": "0",
+        "support_material_auto": "0",
+    },
+    "Normal - Grade": {
+        "support_material": "1",
+        "support_material_auto": "1",
+        "support_material_style": "grid",
+    },
+    "Normal - Linhas": {
+        "support_material": "1",
+        "support_material_auto": "1",
+        "support_material_style": "lines",
+    },
+    "Normal - Quadrados": {
+        "support_material": "1",
+        "support_material_auto": "1",
+        "support_material_style": "squares",
+    },
+    "Normal - Colmeia": {
+        "support_material": "1",
+        "support_material_auto": "1",
+        "support_material_style": "honeycomb",
+    },
+    "Normal - Ajustado (snug)": {
+        "support_material": "1",
+        "support_material_auto": "1",
+        "support_material_style": "snug",
+    },
+    "Árvore - Orgânico": {
+        "support_material": "1",
+        "support_material_auto": "1",
+        "support_material_style": "organic",
+        "support_material_angling": "45",
+    },
+    "Árvore - Orgânico reforçado": {
+        "support_material": "1",
+        "support_material_auto": "1",
+        "support_material_style": "organic",
+        "support_material_angling": "35",
+        "support_material_enforce_layers": "2",
+    },
+    "Árvore - Orgânico econômico": {
+        "support_material": "1",
+        "support_material_auto": "1",
+        "support_material_style": "organic",
+        "support_material_angling": "60",
+        "support_material_threshold": "55",
+    },
+}
+SUPORTE_PADRAO = "Normal - Grade"
+
 LogFn = Callable[[str, str], None]
 
 
@@ -226,6 +281,29 @@ def analisar_arquivo(
     return _carregar_e_preparar(caminho, medida, log)[1]
 
 
+def _gravar_ini_com_suporte(
+    config: Path, parametros: dict[str, str], destino: Path
+) -> None:
+    """Copia o perfil e substitui só as chaves de suporte."""
+    try:
+        linhas = config.read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError as exc:
+        raise ErroConversao(f"Não foi possível ler o perfil {config.name}: {exc}") from exc
+
+    chaves = set(parametros)
+    resultado = [
+        linha
+        for linha in linhas
+        if not ("=" in linha and linha.split("=", 1)[0].strip() in chaves)
+    ]
+    resultado.extend(f"{chave} = {valor}" for chave, valor in parametros.items())
+
+    try:
+        destino.write_text("\n".join(resultado) + "\n", encoding="utf-8")
+    except OSError as exc:
+        raise ErroConversao(f"Não foi possível gravar o perfil temporário: {exc}") from exc
+
+
 def _executar_slicer(
     comando: list[str],
     cwd: str,
@@ -300,6 +378,7 @@ def converter_3mf_para_k7(
     log: LogFn = _sem_log,
     timeout_s: float = TIMEOUT_FATIAMENTO_S,
     cancelar: Callable[[], bool] | None = None,
+    tipo_suporte: str | None = None,
 ) -> ResultadoConversao:
     """Redimensiona, centraliza e fatia o arquivo para a Easythreed K7."""
     caminho = Path(arquivo_3mf).expanduser()
@@ -341,6 +420,21 @@ def converter_3mf_para_k7(
     if cancelar is not None and cancelar():
         raise ErroConversao("Conversão cancelada pelo usuário.")
 
+    config_efetiva = config
+    ini_suporte: Path | None = None
+    if tipo_suporte is not None:
+        parametros = TIPOS_SUPORTE.get(tipo_suporte)
+        if parametros is None:
+            raise ErroConversao(f"Tipo de suporte desconhecido: {tipo_suporte}")
+        descritor_ini, nome_ini = tempfile.mkstemp(
+            prefix="k7_suporte_", suffix=".ini", dir=str(config.parent)
+        )
+        os.close(descritor_ini)
+        ini_suporte = Path(nome_ini)
+        _gravar_ini_com_suporte(config, parametros, ini_suporte)
+        config_efetiva = ini_suporte
+        log("info", f"Tipo de suporte: {tipo_suporte}")
+
     descritor, stl_temporario = tempfile.mkstemp(
         prefix="k7_", suffix=".stl", dir=str(destino.parent)
     )
@@ -354,7 +448,7 @@ def converter_3mf_para_k7(
             str(cli),
             "--export-gcode",
             "--load",
-            str(config),
+            str(config_efetiva),
             "--output",
             str(destino),
             stl_temporario,
@@ -383,11 +477,14 @@ def converter_3mf_para_k7(
         tamanho_kb = destino.stat().st_size / 1024
         log("success", f"Pronto! {destino.name} ({tamanho_kb:.1f} KB)")
     finally:
-        try:
-            if os.path.exists(stl_temporario):
-                os.remove(stl_temporario)
-        except OSError:
-            pass
+        for temporario in (stl_temporario, ini_suporte):
+            if temporario is None:
+                continue
+            try:
+                if os.path.exists(temporario):
+                    os.remove(temporario)
+            except OSError:
+                pass
 
     return ResultadoConversao(
         arquivo_entrada=caminho,

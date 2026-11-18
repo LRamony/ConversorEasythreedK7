@@ -16,6 +16,7 @@ import subprocess
 import sys
 import threading
 import time
+from dataclasses import replace
 from datetime import datetime
 from pathlib import Path
 
@@ -28,12 +29,23 @@ import ttkbootstrap as ttk
 from ttkbootstrap.dialogs import Messagebox
 
 from bootstrap import CONFIG_PAGINA, garantir_config_k7, verificar_e_instalar
+from calculo import (
+    CUSTOS_PADRAO,
+    TEMPO_PADRAO_H,
+    Custos,
+    ErroCalculo,
+    Orcamento,
+    calcular_orcamento,
+    extrair_dados_gcode,
+)
 from converter_k7 import (
     ALTURA_MESA_MM,
     CONFIG_PADRAO,
     LARGURA_MESA_MM,
     LIMITE_SEGURANCA_MM,
     PROFUNDIDADE_MESA_MM,
+    SUPORTE_PADRAO,
+    TIPOS_SUPORTE,
     AnaliseMalha,
     ResultadoConversao,
     analisar_arquivo,
@@ -96,8 +108,8 @@ class AppK7(ttk.Window):
         super().__init__(
             title="Conversor 3MF / STL - Easythreed K7",
             themename=TEMA_PADRAO,
-            size=(1000, 950),
-            minsize=(900, 820),
+            size=(1000, 1010),
+            minsize=(900, 945),
         )
 
         self.estilo = ttk.Style()
@@ -110,6 +122,9 @@ class AppK7(ttk.Window):
         self._analise_geracao = 0
         self._analise_ocupada = False
         self._analise_pendente: tuple[str, float] | None = None
+        self._job_calculo: str | None = None
+        self._calculando = False
+        self._tempo_manual = False
 
         self.var_arquivo = tk.StringVar(value="")
         self.var_formato = tk.StringVar(value="3MF e STL")
@@ -119,10 +134,39 @@ class AppK7(ttk.Window):
         self.var_previa_saida = tk.StringVar(value="Saída: escolha um arquivo para começar")
         self.var_cli = tk.StringVar(value=str(localizar_prusa_cli() or ""))
         self.var_config = tk.StringVar(value=str(CONFIG_PADRAO))
+        self.var_suporte = tk.StringVar(value=SUPORTE_PADRAO)
         self.var_status = tk.StringVar(value="Pronto para converter.")
+
+        # Aba Calc: só a margem é obrigatória; os custos vêm com padrões.
+        self.var_margem = tk.DoubleVar(value=30.0)
+        self.var_tempo_calculo = tk.DoubleVar(value=TEMPO_PADRAO_H)
+        self.var_gcode_calculo = tk.StringVar(value="")
+        self.var_custo_kg = tk.DoubleVar(value=CUSTOS_PADRAO.preco_filamento_kg)
+        self.var_preco_kwh = tk.DoubleVar(value=CUSTOS_PADRAO.preco_kwh)
+        self.var_consumo_w = tk.DoubleVar(value=CUSTOS_PADRAO.consumo_w)
+        self.var_desgaste = tk.DoubleVar(value=CUSTOS_PADRAO.desgaste_por_hora)
+        self.var_mao_obra = tk.DoubleVar(value=CUSTOS_PADRAO.mao_obra_por_hora)
+        self.var_acabamento = tk.DoubleVar(value=CUSTOS_PADRAO.acabamento_por_peca)
+        self.var_embalagem = tk.DoubleVar(value=CUSTOS_PADRAO.embalagem_por_peca)
+        self.orcamento: Orcamento | None = None
 
         self._construir_interface()
         self._aplicar_config_salva()
+
+        # Qualquer alteração nos valores recalcula automaticamente.
+        for variavel in (
+            self.var_margem,
+            self.var_custo_kg,
+            self.var_preco_kwh,
+            self.var_consumo_w,
+            self.var_desgaste,
+            self.var_mao_obra,
+            self.var_acabamento,
+            self.var_embalagem,
+        ):
+            variavel.trace_add("write", self._ao_mudar_calculo)
+        self.var_tempo_calculo.trace_add("write", self._ao_mudar_tempo)
+
         self.protocol("WM_DELETE_WINDOW", self._ao_fechar)
         self.after(100, self._processar_fila)
 
@@ -162,6 +206,17 @@ class AppK7(ttk.Window):
             "cli": self.var_cli.get().strip(),
             "config": config,
             "saida": self.var_saida.get().strip(),
+            "suporte": self.var_suporte.get(),
+            "margem": self.var_margem.get(),
+            "tempo_calculo": self.var_tempo_calculo.get(),
+            "gcode_calculo": self.var_gcode_calculo.get().strip(),
+            "custo_kg": self.var_custo_kg.get(),
+            "preco_kwh": self.var_preco_kwh.get(),
+            "consumo_w": self.var_consumo_w.get(),
+            "desgaste": self.var_desgaste.get(),
+            "mao_obra": self.var_mao_obra.get(),
+            "acabamento": self.var_acabamento.get(),
+            "embalagem": self.var_embalagem.get(),
         }
         try:
             ARQUIVO_CONFIG.parent.mkdir(parents=True, exist_ok=True)
@@ -181,6 +236,26 @@ class AppK7(ttk.Window):
             config_salva if _caminho_valido(config_salva) else str(CONFIG_PADRAO)
         )
         self.var_saida.set(self.config_salva.get("saida", ""))
+
+        suporte = str(self.config_salva.get("suporte", ""))
+        self.var_suporte.set(suporte if suporte in TIPOS_SUPORTE else SUPORTE_PADRAO)
+
+        def restaurar(chave: str, variavel: tk.Variable) -> None:
+            try:
+                variavel.set(float(self.config_salva[chave]))
+            except (KeyError, TypeError, ValueError, tk.TclError):
+                pass
+
+        restaurar("margem", self.var_margem)
+        restaurar("tempo_calculo", self.var_tempo_calculo)
+        restaurar("custo_kg", self.var_custo_kg)
+        restaurar("preco_kwh", self.var_preco_kwh)
+        restaurar("consumo_w", self.var_consumo_w)
+        restaurar("desgaste", self.var_desgaste)
+        restaurar("mao_obra", self.var_mao_obra)
+        restaurar("acabamento", self.var_acabamento)
+        restaurar("embalagem", self.var_embalagem)
+        self.var_gcode_calculo.set(str(self.config_salva.get("gcode_calculo", "")))
 
         self._atualizar_cores_log()
         self._atualizar_previa_saida()
@@ -202,11 +277,14 @@ class AppK7(ttk.Window):
 
         aba_conversao = ttk.Frame(abas, padding=12)
         aba_config = ttk.Frame(abas, padding=12)
+        aba_calc = ttk.Frame(abas, padding=12)
         abas.add(aba_conversao, text="  Converter  ")
         abas.add(aba_config, text="  Configurações  ")
+        abas.add(aba_calc, text="  Calc  ")
 
         self._construir_aba_conversao(aba_conversao)
         self._construir_aba_config(aba_config)
+        self._construir_aba_calc(aba_calc)
         self._construir_log(principal)
         self._construir_acoes(principal)
 
@@ -296,7 +374,18 @@ class AppK7(ttk.Window):
             bootstyle="warning",
         ).grid(row=2, column=0, columnspan=3, sticky="w", pady=(4, 0))
 
-        cartao_saida = self._cartao(aba, "3. Arquivo de saída")
+        cartao_suporte = self._cartao(aba, "3. Tipo de suporte")
+        cartao_suporte.columnconfigure(1, weight=1)
+        ttk.Label(cartao_suporte, text="Árvore = orgânico:").grid(row=0, column=0, sticky="w")
+        ttk.Combobox(
+            cartao_suporte,
+            textvariable=self.var_suporte,
+            values=list(TIPOS_SUPORTE),
+            state="readonly",
+            width=30,
+        ).grid(row=0, column=1, sticky="w", padx=(8, 0))
+
+        cartao_saida = self._cartao(aba, "4. Arquivo de saída")
         cartao_saida.columnconfigure(0, weight=1)
         ttk.Label(cartao_saida, text="Pasta de saída (em branco = mesma pasta do modelo)").grid(
             row=0, column=0, columnspan=2, sticky="w"
@@ -327,12 +416,6 @@ class AppK7(ttk.Window):
         self.lbl_escala.grid(row=1, column=0, sticky="w", pady=(3, 0))
         self.lbl_final = ttk.Label(cartao_previa, text="Após o ajuste: —", bootstyle="secondary")
         self.lbl_final.grid(row=2, column=0, sticky="w", pady=(3, 0))
-        ttk.Button(
-            cartao_previa,
-            text="Calcular prévia",
-            bootstyle="secondary-outline",
-            command=self._agendar_analise,
-        ).grid(row=0, column=1, rowspan=3, sticky="e", padx=(10, 0))
 
         self.var_arquivo.trace_add("write", lambda *_: self._atualizar_previa_saida())
         self.var_saida.trace_add("write", lambda *_: self._atualizar_previa_saida())
@@ -406,10 +489,101 @@ class AppK7(ttk.Window):
             text=f"Mesa: {LARGURA_MESA_MM:g} x {PROFUNDIDADE_MESA_MM:g} x "
             f"{ALTURA_MESA_MM:g} mm  |  Tamanho útil: {LIMITE_SEGURANCA_MM:g} mm\n"
             "Bico: 0,4 mm  |  Filamento: 1,75 mm  |  Hotend: 200 °C (1ª camada) / 195 °C\n"
-            "Mesa: 0 °C  |  Camada: 0,2 mm  |  Preenchimento: 15%  |  Suportes automáticos: ligados",
+            "Mesa: 0 °C  |  Camada: 0,2 mm  |  Preenchimento: 15%  |  Suporte: escolhido na aba Converter",
             bootstyle="secondary",
             justify="left",
         ).pack(anchor="w")
+
+    def _construir_aba_calc(self, aba: ttk.Frame) -> None:
+        # O resultado pode ficar longo; um frame com rolagem evita esconder
+        # os últimos valores em telas menores.
+        conteudo = ttk.ScrolledFrame(aba, bootstyle="round")
+        conteudo.pack(fill="both", expand=True)
+        pai = conteudo
+
+        cartao_entrada = self._cartao(pai, "1. G-code e margem de lucro")
+        cartao_entrada.columnconfigure(1, weight=1)
+        ttk.Label(cartao_entrada, text="G-code:").grid(row=0, column=0, sticky="w")
+        ttk.Entry(cartao_entrada, textvariable=self.var_gcode_calculo).grid(
+            row=0, column=1, sticky="ew"
+        )
+        ttk.Button(
+            cartao_entrada,
+            text="Procurar...",
+            bootstyle="secondary-outline",
+            command=self._escolher_gcode_calculo,
+        ).grid(row=0, column=2, sticky="e", padx=(8, 0))
+        ttk.Label(
+            cartao_entrada, text="Tempo de impressão (h):", bootstyle="primary"
+        ).grid(row=1, column=0, sticky="w", pady=(10, 0))
+        ttk.Spinbox(
+            cartao_entrada,
+            from_=0.01,
+            to=1000.0,
+            increment=0.25,
+            textvariable=self.var_tempo_calculo,
+            width=10,
+        ).grid(row=1, column=1, sticky="w", pady=(10, 0))
+        ttk.Label(
+            cartao_entrada, text="Margem de lucro (%):", bootstyle="primary"
+        ).grid(row=2, column=0, sticky="w", pady=(8, 0))
+        ttk.Spinbox(
+            cartao_entrada,
+            from_=0.0,
+            to=1000.0,
+            increment=5.0,
+            textvariable=self.var_margem,
+            width=10,
+        ).grid(row=2, column=1, sticky="w", pady=(8, 0))
+        ttk.Label(
+            cartao_entrada,
+            text="O cálculo é automático. Tempo e filamento são lidos do G-code; "
+            "se o arquivo não informar o tempo, o valor acima (padrão 1,5 h) é "
+            "usado e pode ser editado. Os custos já vêm com valores padrão.",
+            bootstyle="secondary",
+            wraplength=620,
+            justify="left",
+        ).grid(row=3, column=0, columnspan=3, sticky="w", pady=(8, 0))
+
+        cartao_custos = self._cartao(pai, "2. Custos usados no cálculo (padrões editáveis)")
+        campos = (
+            ("Filamento (R$/kg):", self.var_custo_kg),
+            ("Energia (R$/kWh):", self.var_preco_kwh),
+            ("Consumo da K7 (W):", self.var_consumo_w),
+            ("Desgaste (R$/h):", self.var_desgaste),
+            ("Mão de obra (R$/h):", self.var_mao_obra),
+            ("Acabamento (R$/peça):", self.var_acabamento),
+            ("Embalagem (R$/peça):", self.var_embalagem),
+        )
+        for indice, (texto, variavel) in enumerate(campos):
+            linha, coluna = divmod(indice, 2)
+            ttk.Label(cartao_custos, text=texto).grid(
+                row=linha, column=coluna * 2, sticky="w", pady=(4, 0)
+            )
+            ttk.Spinbox(
+                cartao_custos,
+                from_=0.0,
+                to=100000.0,
+                increment=0.5,
+                textvariable=variavel,
+                width=10,
+            ).grid(
+                row=linha,
+                column=coluna * 2 + 1,
+                sticky="w",
+                padx=(8, 16),
+                pady=(4, 0),
+            )
+
+        cartao_resultado = self._cartao(pai, "3. Resultado")
+        self.lbl_orcamento = ttk.Label(
+            cartao_resultado,
+            text="Escolha um G-code para ver o orçamento.",
+            font=("Consolas", 10),
+            justify="left",
+            bootstyle="secondary",
+        )
+        self.lbl_orcamento.pack(anchor="w")
 
     def _construir_log(self, principal: ttk.Frame) -> None:
         quadro = ttk.Labelframe(principal, text="  Log de execução  ", padding=6, bootstyle="info")
@@ -417,7 +591,7 @@ class AppK7(ttk.Window):
         quadro.columnconfigure(0, weight=1)
         quadro.rowconfigure(0, weight=1)
 
-        self.texto_log = ttk.ScrolledText(quadro, height=9, wrap="word", bootstyle="default")
+        self.texto_log = ttk.ScrolledText(quadro, height=6, wrap="word", bootstyle="default")
         self.texto_log.grid(row=0, column=0, sticky="nsew")
         self.texto_log.configure(state="disabled")
 
@@ -566,6 +740,151 @@ class AppK7(ttk.Window):
             except OSError as exc:
                 self._escrever_log("error", f"Falha ao salvar perfil: {exc}")
 
+    # ------------------------------------------------------------------
+    # Aba Calc: orçamento a partir do G-code
+    # ------------------------------------------------------------------
+    def _ao_mudar_tempo(self, *_args) -> None:
+        """Tempo digitado pelo usuário tem prioridade sobre o do G-code."""
+        if self._calculando:
+            return
+        self._tempo_manual = True
+        self._ao_mudar_calculo()
+
+    def _ao_mudar_calculo(self, *_args) -> None:
+        """Agenda um novo cálculo quando margem, tempo ou custos mudam."""
+        if self._calculando:
+            return
+        if self._job_calculo is not None:
+            try:
+                self.after_cancel(self._job_calculo)
+            except tk.TclError:
+                pass
+        self._job_calculo = self.after(300, self._recalcular_se_possivel)
+
+    def _recalcular_se_possivel(self) -> None:
+        self._job_calculo = None
+        caminho = self.var_gcode_calculo.get().strip().strip('"')
+        if caminho and Path(caminho).is_file():
+            self._calcular_orcamento(caminho)
+
+    def _escolher_gcode_calculo(self) -> None:
+        atual = self.var_gcode_calculo.get().strip().strip('"')
+        inicial = str(Path(atual).parent) if atual and Path(atual).parent.is_dir() else None
+        arquivo = filedialog.askopenfilename(
+            parent=self,
+            title="Selecione o G-code para calcular",
+            filetypes=[("G-code", "*.gcode *.gco"), ("Todos os arquivos", "*.*")],
+            initialdir=inicial,
+        )
+        if arquivo:
+            self._tempo_manual = False
+            self.var_gcode_calculo.set(arquivo)
+            self.after(50, self._calcular_orcamento)
+
+    def _custos_atuais(self) -> Custos:
+        def valor(variavel: tk.DoubleVar, padrao: float) -> float:
+            try:
+                return float(variavel.get())
+            except (ValueError, TypeError, tk.TclError):
+                return padrao
+
+        return Custos(
+            preco_filamento_kg=valor(
+                self.var_custo_kg, CUSTOS_PADRAO.preco_filamento_kg
+            ),
+            preco_kwh=valor(self.var_preco_kwh, CUSTOS_PADRAO.preco_kwh),
+            consumo_w=valor(self.var_consumo_w, CUSTOS_PADRAO.consumo_w),
+            desgaste_por_hora=valor(self.var_desgaste, CUSTOS_PADRAO.desgaste_por_hora),
+            mao_obra_por_hora=valor(self.var_mao_obra, CUSTOS_PADRAO.mao_obra_por_hora),
+            acabamento_por_peca=valor(
+                self.var_acabamento, CUSTOS_PADRAO.acabamento_por_peca
+            ),
+            embalagem_por_peca=valor(self.var_embalagem, CUSTOS_PADRAO.embalagem_por_peca),
+        )
+
+    def _calcular_orcamento(self, arquivo: str | None = None) -> None:
+        if self._calculando:
+            return
+        caminho = arquivo or self.var_gcode_calculo.get().strip().strip('"')
+        if not caminho:
+            if arquivo is not None:
+                Messagebox.show_warning(
+                    "Escolha um G-code para calcular o preço.",
+                    "G-code não informado",
+                    parent=self,
+                )
+            return
+
+        try:
+            horas_padrao = float(self.var_tempo_calculo.get())
+        except (ValueError, TypeError, tk.TclError):
+            horas_padrao = TEMPO_PADRAO_H
+
+        self._calculando = True
+        try:
+            dados = extrair_dados_gcode(caminho, horas_padrao=horas_padrao)
+            if self._tempo_manual:
+                # O usuário digitou um valor: ele vale mais que o do G-code.
+                dados = replace(dados, horas=horas_padrao, tempo_encontrado=False)
+            elif dados.tempo_encontrado:
+                self.var_tempo_calculo.set(round(dados.horas, 4))
+            else:
+                self._escrever_log(
+                    "warn",
+                    "Calc: tempo não encontrado no G-code; usando o valor editável "
+                    f"de {dados.horas:g} h.",
+                )
+            margem = float(self.var_margem.get())
+            orcamento = calcular_orcamento(dados, margem, self._custos_atuais())
+        except (ErroCalculo, ValueError, TypeError, tk.TclError) as exc:
+            self._limpar_orcamento()
+            self._escrever_log("warn", f"Calc: {exc}")
+            Messagebox.show_error(str(exc), "Não foi possível calcular", parent=self)
+            return
+        finally:
+            self._calculando = False
+
+        self.orcamento = orcamento
+        self.var_gcode_calculo.set(str(dados.arquivo))
+        self._mostrar_orcamento(orcamento)
+        self._escrever_log(
+            "success", f"Calc: preço final {self._fmt_reais(orcamento.preco_final)}"
+        )
+
+    @staticmethod
+    def _fmt_reais(valor: float) -> str:
+        texto = f"{valor:,.2f}"
+        return "R$ " + texto.replace(",", "@").replace(".", ",").replace("@", ".")
+
+    def _mostrar_orcamento(self, orcamento: Orcamento) -> None:
+        origem_tempo = "estimado" if orcamento.dados.tempo_encontrado else "informado"
+        linhas = [
+            f"G-code: {orcamento.dados.arquivo.name}",
+            f"Tempo {origem_tempo}: {orcamento.dados.horas:.2f} h",
+            f"Filamento: {orcamento.dados.filamento_g:.1f} g "
+            f"({orcamento.dados.filamento_mm:.0f} mm)",
+            f"Margem aplicada: {orcamento.margem_percentual:g} %",
+            "Custo de produção:",
+        ]
+        for nome, valor in orcamento.linhas():
+            linhas.append(f"  {nome:<24} {self._fmt_reais(valor)}")
+        linhas.extend(
+            [
+                "  " + "-" * 38,
+                f"  {'Custo total':<24} {self._fmt_reais(orcamento.custo_total)}",
+                f"  {'PREÇO FINAL':<24} {self._fmt_reais(orcamento.preco_final)}",
+                f"  {'Lucro':<24} {self._fmt_reais(orcamento.lucro)}",
+            ]
+        )
+        self.lbl_orcamento.configure(text="\n".join(linhas), bootstyle="primary")
+
+    def _limpar_orcamento(self) -> None:
+        self.orcamento = None
+        self.lbl_orcamento.configure(
+            text="Escolha um G-code para ver o orçamento.",
+            bootstyle="secondary",
+        )
+
     def _ao_fechar(self) -> None:
         if self._cancelar_event is not None:
             self._cancelar_event.set()
@@ -698,6 +1017,7 @@ class AppK7(ttk.Window):
                 config,
                 arquivo_gcode,
                 self._cancelar_event,
+                self.var_suporte.get(),
             ),
             daemon=True,
         ).start()
@@ -717,6 +1037,7 @@ class AppK7(ttk.Window):
         config: str,
         arquivo_gcode: Path | None,
         cancelar: threading.Event,
+        tipo_suporte: str,
     ) -> None:
         try:
             resultado = converter_3mf_para_k7(
@@ -727,6 +1048,7 @@ class AppK7(ttk.Window):
                 arquivo_gcode=arquivo_gcode,
                 log=self._log,
                 cancelar=cancelar.is_set,
+                tipo_suporte=tipo_suporte,
             )
         except Exception as exc:
             self._enfileirar(("erro", str(exc)))
@@ -775,6 +1097,14 @@ class AppK7(ttk.Window):
 
                 elif tipo == "sucesso":
                     self._finalizar_sucesso(item[1])
+                    caminho_gcode = str(item[1].arquivo_gcode)
+                    self._tempo_manual = False
+                    self.var_gcode_calculo.set(caminho_gcode)
+                    # Depois do aviso de conclusão, preenche a aba Calc.
+                    self.after(
+                        50,
+                        lambda caminho=caminho_gcode: self._calcular_orcamento(caminho),
+                    )
                     self._dialogo_pendente = (
                         "info",
                         f"G-code gerado em:\n{item[1].arquivo_gcode}",
