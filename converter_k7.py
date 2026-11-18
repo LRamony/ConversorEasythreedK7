@@ -36,6 +36,8 @@ TAMANHO_MAXIMO_ARQUIVO_MB = 200
 MAX_FACES = 2_000_000
 MAX_LINHAS_LOG = 200
 TIMEOUT_FATIAMENTO_S = 300.0
+QUANTIDADE_MAXIMA = 20
+ESPACAMENTO_COPIAS_MM = 2.0
 
 
 def _pasta_recursos() -> Path:
@@ -119,6 +121,12 @@ TIPOS_SUPORTE: dict[str, dict[str, str]] = {
 }
 SUPORTE_PADRAO = "Normal - Grade"
 
+# Aplicado somente quando a opção "Suportes mais finos" está ligada e o tipo
+# escolhido realmente gera suporte. Vale para suporte normal e para árvore.
+SUPORTE_FINO_PADRAO_MM = 0.3
+SUPORTE_FINO_MIN_MM = 0.15
+SUPORTE_FINO_MAX_MM = 0.5
+
 LogFn = Callable[[str, str], None]
 
 
@@ -131,6 +139,38 @@ class ErroConversao(RuntimeError):
     """Erro de conversão já formatado para ser exibido ao usuário."""
 
 
+def validar_suporte_fino_mm(valor: float, log: LogFn = _sem_log) -> float:
+    """Valida a espessura desejada para o suporte fino."""
+    try:
+        espessura = float(valor)
+    except (TypeError, ValueError) as exc:
+        raise ErroConversao("Informe uma espessura válida para o suporte fino.") from exc
+    if not math.isfinite(espessura):
+        raise ErroConversao("A espessura do suporte fino deve ser um número válido.")
+
+    arredondada = round(espessura, 2)
+    limitado = min(max(arredondada, SUPORTE_FINO_MIN_MM), SUPORTE_FINO_MAX_MM)
+    if limitado != arredondada:
+        log(
+            "warn",
+            f"Espessura de suporte {espessura:g} mm ajustada para {limitado:g} mm "
+            f"(intervalo: {SUPORTE_FINO_MIN_MM:g} a {SUPORTE_FINO_MAX_MM:g} mm).",
+        )
+    return limitado
+
+
+def parametros_suporte_fino(espessura_mm: float) -> dict[str, str]:
+    """Monta as chaves do PrusaSlicer a partir da espessura escolhida."""
+    espessura = validar_suporte_fino_mm(espessura_mm)
+    return {
+        "support_material_extrusion_width": f"{espessura:g}",
+        "support_material_interface_extrusion_width": f"{espessura:g}",
+        # PrusaSlicer exige ponta >= largura e ramo >= 2x a largura.
+        "support_tree_branch_diameter": f"{round(espessura * 4, 2):g}",
+        "support_tree_tip_diameter": f"{round(espessura * 2, 2):g}",
+    }
+
+
 @dataclass(frozen=True)
 class AnaliseMalha:
     """Medidas da peça antes e depois do ajuste."""
@@ -140,6 +180,9 @@ class AnaliseMalha:
     fator_escala: float
     medida_aplicada: float
     partes: int
+    quantidade: int = 1
+    colunas: int = 1
+    linhas: int = 1
 
 
 @dataclass(frozen=True)
@@ -182,14 +225,85 @@ def validar_medida(medida_mm: float, log: LogFn = _sem_log) -> float:
     return medida
 
 
+def validar_quantidade(quantidade: int, log: LogFn = _sem_log) -> int:
+    """Valida quantas cópias cabem no limite de segurança de processamento."""
+    try:
+        valor = int(quantidade)
+    except (TypeError, ValueError) as exc:
+        raise ErroConversao("Informe uma quantidade válida de peças.") from exc
+    if valor < 1:
+        raise ErroConversao("A quantidade deve ser pelo menos 1.")
+    if valor > QUANTIDADE_MAXIMA:
+        log(
+            "warn",
+            f"Quantidade {valor} acima do limite; usando {QUANTIDADE_MAXIMA} para "
+            "evitar travamento.",
+        )
+        valor = QUANTIDADE_MAXIMA
+    return valor
+
+
 def _formatar_dimensoes(dimensoes: tuple[float, float, float]) -> str:
     return " x ".join(f"{valor:.2f}" for valor in dimensoes)
 
 
+def _melhor_layout(
+    largura: float, profundidade: float, quantidade: int
+) -> tuple[int, int, float]:
+    """Escolhe a grade que permite a maior escala uniforme dentro dos 95 mm."""
+    melhor: tuple[int, int, float] = (1, quantidade, 0.0)
+    for colunas in range(1, quantidade + 1):
+        linhas = math.ceil(quantidade / colunas)
+        # O espaçamento é aplicado depois da escala, então ele não pode ser
+        # multiplicado pelo fator: reservamos o espaço fixo antes de dividir.
+        livre_x = LIMITE_SEGURANCA_MM - (colunas - 1) * ESPACAMENTO_COPIAS_MM
+        livre_y = LIMITE_SEGURANCA_MM - (linhas - 1) * ESPACAMENTO_COPIAS_MM
+        escala = min(livre_x / (colunas * largura), livre_y / (linhas * profundidade))
+        if escala > melhor[2]:
+            melhor = (colunas, linhas, escala)
+    return melhor
+
+
+def _distribuir_copias(
+    malha: trimesh.Trimesh, quantidade: int, colunas: int, linhas: int
+) -> trimesh.Trimesh:
+    """Posiciona as cópias em grade centralizada, com espaçamento entre elas."""
+    largura, profundidade, _altura = (float(v) for v in malha.extents)
+    profundidade_total = (
+        linhas * profundidade + (linhas - 1) * ESPACAMENTO_COPIAS_MM
+    )
+    copias: list[trimesh.Trimesh] = []
+    indice = 0
+    for linha in range(linhas):
+        nesta_linha = min(colunas, quantidade - indice)
+        if nesta_linha <= 0:
+            break
+        largura_linha = (
+            nesta_linha * largura + (nesta_linha - 1) * ESPACAMENTO_COPIAS_MM
+        )
+        x_inicial = -largura_linha / 2 + largura / 2
+        y = -profundidade_total / 2 + profundidade / 2 + linha * (
+            profundidade + ESPACAMENTO_COPIAS_MM
+        )
+        for coluna in range(nesta_linha):
+            copia = malha.copy()
+            copia.apply_translation(
+                [
+                    x_inicial + coluna * (largura + ESPACAMENTO_COPIAS_MM),
+                    y,
+                    0.0,
+                ]
+            )
+            copias.append(copia)
+            indice += 1
+    return trimesh.util.concatenate(copias)
+
+
 def _carregar_e_preparar(
-    caminho: Path, medida: float, log: LogFn
+    caminho: Path, medida: float, log: LogFn, quantidade: int = 1
 ) -> tuple[trimesh.Trimesh, AnaliseMalha]:
-    """Carrega a malha, escala proporcionalmente e centraliza na mesa da K7."""
+    """Carrega a malha, distribui as cópias e centraliza na mesa da K7."""
+    quantidade = validar_quantidade(quantidade, log)
     log("info", f"Carregando {caminho.name}...")
 
     try:
@@ -237,8 +351,26 @@ def _carregar_e_preparar(
     if not math.isfinite(maior_lado) or maior_lado <= 0:
         raise ErroConversao("A malha não possui dimensões válidas.")
 
-    fator_escala = medida / maior_lado
+    colunas, linhas, escala_grade = 1, 1, math.inf
+    if quantidade > 1:
+        colunas, linhas, escala_grade = _melhor_layout(
+            dimensoes_originais[0], dimensoes_originais[1], quantidade
+        )
+
+    # O tamanho escolhido é o teto; a grade pode reduzir a escala para que
+    # todas as cópias caibam na área útil de 95 mm.
+    fator_escala = min(medida / maior_lado, escala_grade)
+
+    total_faces = len(malha.faces) * quantidade
+    if total_faces > MAX_FACES:
+        raise ErroConversao(
+            f"{quantidade} cópia(s) somam {total_faces:,} triângulos e passam do "
+            f"limite de {MAX_FACES:,}. Reduza a quantidade ou simplifique o modelo."
+        )
+
     malha.apply_scale(fator_escala)
+    if quantidade > 1:
+        malha = _distribuir_copias(malha, quantidade, colunas, linhas)
 
     minimo, maximo = malha.bounds
     centro_x = (minimo[0] + maximo[0]) / 2
@@ -260,17 +392,30 @@ def _carregar_e_preparar(
         fator_escala=fator_escala,
         medida_aplicada=medida,
         partes=partes,
+        quantidade=quantidade,
+        colunas=colunas,
+        linhas=linhas,
     )
 
     log("info", f"Dimensões originais: {_formatar_dimensoes(dimensoes_originais)} mm ({partes} parte(s))")
+    if quantidade > 1:
+        log(
+            "info",
+            f"{quantidade} cópias em grade {colunas}x{linhas}, espaçamento de "
+            f"{ESPACAMENTO_COPIAS_MM:g} mm; escala automática aplicada para caber.",
+        )
     log("info", f"Escala {fator_escala:.4f}x -> {_formatar_dimensoes(dimensoes_finais)} mm")
-    log("info", "Posicionamento: centro em (50, 50) mm e base encostada em Z = 0 mm")
+    log("info", "Posicionamento: centro do conjunto em (50, 50) mm e base em Z = 0 mm")
 
     return malha, analise
 
 
 def analisar_arquivo(
-    arquivo: str | Path, medida_maxima_mm: float, log: LogFn = _sem_log
+    arquivo: str | Path,
+    medida_maxima_mm: float,
+    log: LogFn = _sem_log,
+    *,
+    quantidade: int = 1,
 ) -> AnaliseMalha:
     """Só lê e mede a peça (usado pela prévia da interface)."""
     caminho = Path(arquivo).expanduser()
@@ -278,7 +423,7 @@ def analisar_arquivo(
         raise ErroConversao(f"Arquivo não encontrado: {caminho}")
 
     medida = validar_medida(medida_maxima_mm, log)
-    return _carregar_e_preparar(caminho, medida, log)[1]
+    return _carregar_e_preparar(caminho, medida, log, quantidade)[1]
 
 
 def _gravar_ini_com_suporte(
@@ -379,6 +524,9 @@ def converter_3mf_para_k7(
     timeout_s: float = TIMEOUT_FATIAMENTO_S,
     cancelar: Callable[[], bool] | None = None,
     tipo_suporte: str | None = None,
+    quantidade: int = 1,
+    suporte_fino: bool = False,
+    suporte_fino_mm: float = SUPORTE_FINO_PADRAO_MM,
 ) -> ResultadoConversao:
     """Redimensiona, centraliza e fatia o arquivo para a Easythreed K7."""
     caminho = Path(arquivo_3mf).expanduser()
@@ -415,25 +563,40 @@ def converter_3mf_para_k7(
     if cancelar is not None and cancelar():
         raise ErroConversao("Conversão cancelada pelo usuário.")
 
-    malha, analise = _carregar_e_preparar(caminho, medida, log)
+    malha, analise = _carregar_e_preparar(caminho, medida, log, quantidade)
 
     if cancelar is not None and cancelar():
         raise ErroConversao("Conversão cancelada pelo usuário.")
 
     config_efetiva = config
     ini_suporte: Path | None = None
-    if tipo_suporte is not None:
-        parametros = TIPOS_SUPORTE.get(tipo_suporte)
-        if parametros is None:
-            raise ErroConversao(f"Tipo de suporte desconhecido: {tipo_suporte}")
+    if tipo_suporte is not None or suporte_fino:
+        nome_tipo = tipo_suporte or SUPORTE_PADRAO
+        modelo = TIPOS_SUPORTE.get(nome_tipo)
+        if modelo is None:
+            raise ErroConversao(f"Tipo de suporte desconhecido: {nome_tipo}")
+        parametros = dict(modelo)
+        espessura_fina: float | None = None
+        if suporte_fino and parametros.get("support_material") == "1":
+            espessura_fina = validar_suporte_fino_mm(suporte_fino_mm, log)
+            parametros.update(parametros_suporte_fino(espessura_fina))
         descritor_ini, nome_ini = tempfile.mkstemp(
             prefix="k7_suporte_", suffix=".ini", dir=str(config.parent)
         )
         os.close(descritor_ini)
         ini_suporte = Path(nome_ini)
-        _gravar_ini_com_suporte(config, parametros, ini_suporte)
+        try:
+            _gravar_ini_com_suporte(config, parametros, ini_suporte)
+        except Exception:
+            ini_suporte.unlink(missing_ok=True)
+            raise
         config_efetiva = ini_suporte
-        log("info", f"Tipo de suporte: {tipo_suporte}")
+        detalhe = (
+            f" (mais fino: {espessura_fina:g} mm)"
+            if espessura_fina is not None
+            else ""
+        )
+        log("info", f"Tipo de suporte: {nome_tipo}{detalhe}")
 
     descritor, stl_temporario = tempfile.mkstemp(
         prefix="k7_", suffix=".stl", dir=str(destino.parent)

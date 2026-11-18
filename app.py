@@ -16,6 +16,7 @@ import subprocess
 import sys
 import threading
 import time
+import webbrowser
 from dataclasses import replace
 from datetime import datetime
 from pathlib import Path
@@ -44,6 +45,10 @@ from converter_k7 import (
     LARGURA_MESA_MM,
     LIMITE_SEGURANCA_MM,
     PROFUNDIDADE_MESA_MM,
+    QUANTIDADE_MAXIMA,
+    SUPORTE_FINO_MAX_MM,
+    SUPORTE_FINO_MIN_MM,
+    SUPORTE_FINO_PADRAO_MM,
     SUPORTE_PADRAO,
     TIPOS_SUPORTE,
     AnaliseMalha,
@@ -63,6 +68,12 @@ def _pasta_preferencias() -> Path:
 ARQUIVO_CONFIG = _pasta_preferencias() / "k7_gui_settings.json"
 
 TEMA_PADRAO = "bootstrap-dark"
+
+URL_DOCUMENTACAO = (
+    "https://github.com/LRamony/ConversorEasythreedK7/blob/main/README.md"
+)
+URL_LINKEDIN = "https://www.linkedin.com/in/ramony-sabino-5a896536/"
+NOME_DESENVOLVEDOR = "Lucas Ramony"
 
 MAX_ITENS_FILA = 500
 MAX_LINHAS_LOG_GUI = 500
@@ -121,8 +132,9 @@ class AppK7(ttk.Window):
         self._dialogo_pendente: tuple[str, str, str] | None = None
         self._analise_geracao = 0
         self._analise_ocupada = False
-        self._analise_pendente: tuple[str, float] | None = None
+        self._analise_pendente: tuple[str, float, int] | None = None
         self._job_calculo: str | None = None
+        self._job_fila: str | None = None
         self._calculando = False
         self._tempo_manual = False
 
@@ -130,6 +142,9 @@ class AppK7(ttk.Window):
         self.var_formato = tk.StringVar(value="3MF e STL")
         self.var_tamanho = tk.DoubleVar(value=60.0)
         self.var_scale = tk.DoubleVar(value=60.0)
+        self.var_quantidade = tk.IntVar(value=1)
+        self.var_suporte_fino = tk.BooleanVar(value=False)
+        self.var_suporte_fino_mm = tk.DoubleVar(value=SUPORTE_FINO_PADRAO_MM)
         self.var_saida = tk.StringVar(value="")
         self.var_previa_saida = tk.StringVar(value="Saída: escolha um arquivo para começar")
         self.var_cli = tk.StringVar(value=str(localizar_prusa_cli() or ""))
@@ -166,9 +181,26 @@ class AppK7(ttk.Window):
         ):
             variavel.trace_add("write", self._ao_mudar_calculo)
         self.var_tempo_calculo.trace_add("write", self._ao_mudar_tempo)
+        self.var_quantidade.trace_add("write", self._ao_mudar_quantidade)
 
         self.protocol("WM_DELETE_WINDOW", self._ao_fechar)
-        self.after(100, self._processar_fila)
+        self._job_fila = self.after(100, self._processar_fila)
+
+    def _cancelar_temporizadores(self) -> None:
+        """Evita callbacks de `after` depois que a janela foi fechada."""
+        for atributo in ("_job_fila", "_job_calculo", "_job_analise"):
+            job = getattr(self, atributo, None)
+            if job is None:
+                continue
+            try:
+                self.after_cancel(job)
+            except (tk.TclError, ValueError):
+                pass
+            setattr(self, atributo, None)
+
+    def destroy(self) -> None:
+        self._cancelar_temporizadores()
+        super().destroy()
 
     def _enfileirar(self, item: tuple) -> None:
         """Envia mensagens da thread para a GUI sem deixar a fila crescer sem fim."""
@@ -206,7 +238,11 @@ class AppK7(ttk.Window):
             "cli": self.var_cli.get().strip(),
             "config": config,
             "saida": self.var_saida.get().strip(),
+            "tamanho": self.var_tamanho.get(),
+            "quantidade": self.var_quantidade.get(),
             "suporte": self.var_suporte.get(),
+            "suporte_fino": self.var_suporte_fino.get(),
+            "suporte_fino_mm": self.var_suporte_fino_mm.get(),
             "margem": self.var_margem.get(),
             "tempo_calculo": self.var_tempo_calculo.get(),
             "gcode_calculo": self.var_gcode_calculo.get().strip(),
@@ -239,12 +275,35 @@ class AppK7(ttk.Window):
 
         suporte = str(self.config_salva.get("suporte", ""))
         self.var_suporte.set(suporte if suporte in TIPOS_SUPORTE else SUPORTE_PADRAO)
+        self.var_suporte_fino.set(bool(self.config_salva.get("suporte_fino", False)))
+        try:
+            espessura = float(self.config_salva["suporte_fino_mm"])
+            self.var_suporte_fino_mm.set(
+                min(max(espessura, SUPORTE_FINO_MIN_MM), SUPORTE_FINO_MAX_MM)
+            )
+        except (KeyError, TypeError, ValueError, tk.TclError):
+            self.var_suporte_fino_mm.set(SUPORTE_FINO_PADRAO_MM)
 
         def restaurar(chave: str, variavel: tk.Variable) -> None:
             try:
                 variavel.set(float(self.config_salva[chave]))
             except (KeyError, TypeError, ValueError, tk.TclError):
                 pass
+
+        # O último tamanho usado vira o padrão da próxima execução.
+        restaurar("tamanho", self.var_tamanho)
+        try:
+            tamanho = min(max(float(self.var_tamanho.get()), 1.0), LIMITE_SEGURANCA_MM)
+            self.var_tamanho.set(tamanho)
+            self.var_scale.set(tamanho)
+        except (TypeError, ValueError, tk.TclError):
+            pass
+
+        try:
+            quantidade = int(self.config_salva["quantidade"])
+            self.var_quantidade.set(min(max(quantidade, 1), QUANTIDADE_MAXIMA))
+        except (KeyError, TypeError, ValueError, tk.TclError):
+            pass
 
         restaurar("margem", self.var_margem)
         restaurar("tempo_calculo", self.var_tempo_calculo)
@@ -288,12 +347,26 @@ class AppK7(ttk.Window):
         self._construir_log(principal)
         self._construir_acoes(principal)
 
+        rodape = ttk.Frame(principal)
+        rodape.grid(row=4, column=0, sticky="ew", pady=(6, 0))
+        rodape.columnconfigure(0, weight=1)
         ttk.Label(
-            principal,
+            rodape,
             textvariable=self.var_status,
             bootstyle="secondary",
             anchor="w",
-        ).grid(row=4, column=0, sticky="ew", pady=(6, 0))
+        ).pack(side="left", fill="x", expand=True)
+        self.lnk_documentacao = ttk.Label(
+            rodape,
+            text="Documentação",
+            bootstyle="primary",
+            cursor="hand2",
+            font=("Segoe UI", 9, "underline"),
+        )
+        self.lnk_documentacao.pack(side="right", padx=(12, 0))
+        self.lnk_documentacao.bind(
+            "<Button-1>", lambda _evento: self._abrir_documentacao()
+        )
 
     def _construir_cabecalho(self, principal: ttk.Frame) -> None:
         cabecalho = ttk.Frame(principal)
@@ -366,13 +439,28 @@ class AppK7(ttk.Window):
             command=self._ao_mover_escala,
             bootstyle="primary",
         )
-        escala.grid(row=1, column=0, columnspan=3, sticky="ew", pady=(10, 2))
+        ttk.Label(
+            cartao_tamanho, text="Quantidade de peças:", bootstyle="primary"
+        ).grid(row=0, column=2, sticky="e", padx=(24, 0))
+        ttk.Spinbox(
+            cartao_tamanho,
+            from_=1,
+            to=QUANTIDADE_MAXIMA,
+            increment=1,
+            textvariable=self.var_quantidade,
+            width=8,
+        ).grid(row=0, column=3, sticky="w", padx=(8, 0))
+
+        escala.grid(row=1, column=0, columnspan=4, sticky="ew", pady=(10, 2))
         ttk.Label(
             cartao_tamanho,
             text=f"Trava de segurança: qualquer valor acima de {LIMITE_SEGURANCA_MM:g} mm "
-            "é limitado automaticamente antes de fatiar.",
+            "é limitado automaticamente antes de fatiar.\n"
+            "Ao aumentar a quantidade, a escala é reduzida para que todas as peças "
+            "caibam. O último tamanho é lembrado na próxima execução.",
             bootstyle="warning",
-        ).grid(row=2, column=0, columnspan=3, sticky="w", pady=(4, 0))
+            justify="left",
+        ).grid(row=2, column=0, columnspan=4, sticky="w", pady=(4, 0))
 
         cartao_suporte = self._cartao(aba, "3. Tipo de suporte")
         cartao_suporte.columnconfigure(1, weight=1)
@@ -382,8 +470,30 @@ class AppK7(ttk.Window):
             textvariable=self.var_suporte,
             values=list(TIPOS_SUPORTE),
             state="readonly",
-            width=30,
+            width=28,
         ).grid(row=0, column=1, sticky="w", padx=(8, 0))
+        ttk.Checkbutton(
+            cartao_suporte,
+            text="Suportes mais finos",
+            variable=self.var_suporte_fino,
+            bootstyle="success",
+        ).grid(row=0, column=2, sticky="w", padx=(16, 0))
+        self.spin_suporte_fino = ttk.Spinbox(
+            cartao_suporte,
+            from_=SUPORTE_FINO_MIN_MM,
+            to=SUPORTE_FINO_MAX_MM,
+            increment=0.05,
+            textvariable=self.var_suporte_fino_mm,
+            width=6,
+        )
+        self.spin_suporte_fino.grid(row=0, column=3, sticky="w", padx=(8, 0))
+        ttk.Label(cartao_suporte, text="mm").grid(row=0, column=4, sticky="w", padx=(4, 0))
+        ttk.Button(
+            cartao_suporte,
+            text="Reset",
+            bootstyle="secondary-outline",
+            command=self._reset_suporte_fino,
+        ).grid(row=0, column=5, sticky="w", padx=(10, 0))
 
         cartao_saida = self._cartao(aba, "4. Arquivo de saída")
         cartao_saida.columnconfigure(0, weight=1)
@@ -513,37 +623,39 @@ class AppK7(ttk.Window):
             bootstyle="secondary-outline",
             command=self._escolher_gcode_calculo,
         ).grid(row=0, column=2, sticky="e", padx=(8, 0))
-        ttk.Label(
-            cartao_entrada, text="Tempo de impressão (h):", bootstyle="primary"
-        ).grid(row=1, column=0, sticky="w", pady=(10, 0))
+        campos = ttk.Frame(cartao_entrada)
+        campos.grid(row=1, column=0, columnspan=3, sticky="w", pady=(10, 0))
+        ttk.Label(campos, text="Margem de lucro (%):", bootstyle="primary").grid(
+            row=0, column=0, sticky="w"
+        )
         ttk.Spinbox(
-            cartao_entrada,
-            from_=0.01,
-            to=1000.0,
-            increment=0.25,
-            textvariable=self.var_tempo_calculo,
-            width=10,
-        ).grid(row=1, column=1, sticky="w", pady=(10, 0))
-        ttk.Label(
-            cartao_entrada, text="Margem de lucro (%):", bootstyle="primary"
-        ).grid(row=2, column=0, sticky="w", pady=(8, 0))
-        ttk.Spinbox(
-            cartao_entrada,
+            campos,
             from_=0.0,
             to=1000.0,
             increment=5.0,
             textvariable=self.var_margem,
             width=10,
-        ).grid(row=2, column=1, sticky="w", pady=(8, 0))
+        ).grid(row=0, column=1, sticky="w", padx=(8, 24))
+        ttk.Label(campos, text="Tempo de impressão (h):", bootstyle="primary").grid(
+            row=0, column=2, sticky="w"
+        )
+        ttk.Spinbox(
+            campos,
+            from_=0.01,
+            to=1000.0,
+            increment=0.25,
+            textvariable=self.var_tempo_calculo,
+            width=10,
+        ).grid(row=0, column=3, sticky="w", padx=(8, 0))
         ttk.Label(
             cartao_entrada,
             text="O cálculo é automático. Tempo e filamento são lidos do G-code; "
-            "se o arquivo não informar o tempo, o valor acima (padrão 1,5 h) é "
+            "se o arquivo não informar o tempo, o valor ao lado (padrão 1,5 h) é "
             "usado e pode ser editado. Os custos já vêm com valores padrão.",
             bootstyle="secondary",
             wraplength=620,
             justify="left",
-        ).grid(row=3, column=0, columnspan=3, sticky="w", pady=(8, 0))
+        ).grid(row=2, column=0, columnspan=3, sticky="w", pady=(8, 0))
 
         cartao_custos = self._cartao(pai, "2. Custos usados no cálculo (padrões editáveis)")
         campos = (
@@ -576,6 +688,7 @@ class AppK7(ttk.Window):
             )
 
         cartao_resultado = self._cartao(pai, "3. Resultado")
+        cartao_resultado.columnconfigure(0, weight=1)
         self.lbl_orcamento = ttk.Label(
             cartao_resultado,
             text="Escolha um G-code para ver o orçamento.",
@@ -583,7 +696,15 @@ class AppK7(ttk.Window):
             justify="left",
             bootstyle="secondary",
         )
-        self.lbl_orcamento.pack(anchor="w")
+        self.lbl_orcamento.grid(row=0, column=0, sticky="nw")
+        self.btn_copiar_orcamento = ttk.Button(
+            cartao_resultado,
+            text="Copiar resultado",
+            bootstyle="secondary-outline",
+            command=self._copiar_orcamento,
+        )
+        self.btn_copiar_orcamento.grid(row=0, column=1, sticky="ne", padx=(12, 0))
+        self.btn_copiar_orcamento.grid_remove()
 
     def _construir_log(self, principal: ttk.Frame) -> None:
         quadro = ttk.Labelframe(principal, text="  Log de execução  ", padding=6, bootstyle="info")
@@ -664,6 +785,36 @@ class AppK7(ttk.Window):
         valor = min(max(valor, 1.0), LIMITE_SEGURANCA_MM)
         self.var_scale.set(valor)
         self._agendar_analise()
+
+    def _ao_mudar_quantidade(self, *_eventos) -> None:
+        """Recalcula a prévia quando a quantidade de peças muda."""
+        try:
+            valor = int(self.var_quantidade.get())
+        except (ValueError, TypeError, tk.TclError):
+            return
+        limitado = min(max(valor, 1), QUANTIDADE_MAXIMA)
+        if limitado != valor:
+            self.var_quantidade.set(limitado)  # o trace chama esta função de novo
+            return
+        self._agendar_analise()
+
+    def _reset_suporte_fino(self) -> None:
+        """Volta ao estado de fábrica: opção desligada e 0,3 mm."""
+        self.var_suporte_fino.set(False)
+        self.var_suporte_fino_mm.set(SUPORTE_FINO_PADRAO_MM)
+        self._escrever_log(
+            "success",
+            f"Suporte fino restaurado para o padrão ({SUPORTE_FINO_PADRAO_MM:g} mm, desligado).",
+        )
+
+    def _abrir_url(self, url: str) -> None:
+        try:
+            webbrowser.open(url)
+        except Exception as exc:  # navegador ausente não pode derrubar a GUI
+            self._escrever_log("error", f"Não foi possível abrir o link: {exc}")
+
+    def _abrir_documentacao(self) -> None:
+        self._abrir_url(URL_DOCUMENTACAO)
 
     def _escolher_arquivo(self) -> None:
         formato = self.var_formato.get()
@@ -877,6 +1028,20 @@ class AppK7(ttk.Window):
             ]
         )
         self.lbl_orcamento.configure(text="\n".join(linhas), bootstyle="primary")
+        self.btn_copiar_orcamento.grid()
+
+    def _copiar_orcamento(self) -> None:
+        """Copia o resultado atual para a área de transferência."""
+        if self.orcamento is None:
+            return
+        try:
+            self.clipboard_clear()
+            self.clipboard_append(self.lbl_orcamento.cget("text"))
+            self.update_idletasks()
+        except tk.TclError as exc:
+            self._escrever_log("error", f"Calc: não foi possível copiar: {exc}")
+            return
+        self._escrever_log("success", "Calc: resultado copiado.")
 
     def _limpar_orcamento(self) -> None:
         self.orcamento = None
@@ -884,6 +1049,7 @@ class AppK7(ttk.Window):
             text="Escolha um G-code para ver o orçamento.",
             bootstyle="secondary",
         )
+        self.btn_copiar_orcamento.grid_remove()
 
     def _ao_fechar(self) -> None:
         if self._cancelar_event is not None:
@@ -910,23 +1076,27 @@ class AppK7(ttk.Window):
             self._limpar_previa()
             return
 
+        parametros = (arquivo, self._medida_atual(), self._quantidade_atual())
+
         # Uma única thread de prévia por vez: arrastar o slider não pode criar
         # dezenas de leituras simultâneas da mesma malha.
         if self._analise_ocupada:
-            self._analise_pendente = (arquivo, self._medida_atual())
+            self._analise_pendente = parametros
             return
 
         self.lbl_dimensoes.configure(text="Dimensões atuais: calculando...")
         self._analise_ocupada = True
         threading.Thread(
             target=self._worker_analise,
-            args=(arquivo, self._medida_atual(), self._analise_geracao),
+            args=(*parametros, self._analise_geracao),
             daemon=True,
         ).start()
 
-    def _worker_analise(self, arquivo: str, medida: float, geracao: int) -> None:
+    def _worker_analise(
+        self, arquivo: str, medida: float, quantidade: int, geracao: int
+    ) -> None:
         try:
-            analise = analisar_arquivo(arquivo, medida)
+            analise = analisar_arquivo(arquivo, medida, quantidade=quantidade)
         except Exception as exc:  # a prévia nunca deve derrubar a interface
             self._enfileirar(("analise_erro", geracao, str(exc)))
         else:
@@ -936,13 +1106,26 @@ class AppK7(ttk.Window):
         self.lbl_dimensoes.configure(
             text=f"Dimensões atuais: {_fmt(analise.dimensoes_originais)} mm"
         )
+        detalhe = f"{analise.partes} parte(s)"
+        if analise.quantidade > 1:
+            detalhe += f", {analise.quantidade} peça(s)"
         self.lbl_escala.configure(
-            text=f"Fator de escala: {analise.fator_escala:.4f}x  "
-            f"({analise.partes} parte(s))"
+            text=f"Fator de escala: {analise.fator_escala:.4f}x  ({detalhe})"
         )
-        self.lbl_final.configure(
-            text=f"Após o ajuste: {_fmt(analise.dimensoes_finais)} mm"
-        )
+        if analise.quantidade > 1:
+            por_peca = tuple(
+                float(valor) * analise.fator_escala
+                for valor in analise.dimensoes_originais
+            )
+            self.lbl_final.configure(
+                text=f"Conjunto {analise.colunas}x{analise.linhas}: "
+                f"{_fmt(analise.dimensoes_finais)} mm\n"
+                f"Cada peça: {_fmt(por_peca)} mm"
+            )
+        else:
+            self.lbl_final.configure(
+                text=f"Após o ajuste: {_fmt(analise.dimensoes_finais)} mm"
+            )
 
     def _limpar_previa(self) -> None:
         self.lbl_dimensoes.configure(text="Dimensões atuais: —")
@@ -957,6 +1140,21 @@ class AppK7(ttk.Window):
             return float(self.var_tamanho.get())
         except (ValueError, tk.TclError):
             return LIMITE_SEGURANCA_MM
+
+    def _quantidade_atual(self) -> int:
+        try:
+            return min(max(int(self.var_quantidade.get()), 1), QUANTIDADE_MAXIMA)
+        except (ValueError, TypeError, tk.TclError):
+            return 1
+
+    def _espessura_suporte_fino(self) -> float:
+        try:
+            valor = float(self.var_suporte_fino_mm.get())
+        except (ValueError, TypeError, tk.TclError):
+            return SUPORTE_FINO_PADRAO_MM
+        return min(
+            max(round(valor, 2), SUPORTE_FINO_MIN_MM), SUPORTE_FINO_MAX_MM
+        )
 
     def _iniciar_conversao(self) -> None:
         if self.ocupado:
@@ -1000,6 +1198,10 @@ class AppK7(ttk.Window):
         if pasta:
             arquivo_gcode = Path(pasta) / f"{Path(arquivo).stem}_K7.gcode"
 
+        # Garante que o último tamanho/quantidade escolhidos sobrevivam até mesmo
+        # se o programa for fechado de forma inesperada durante a conversão.
+        self._salvar_config()
+
         self.ocupado = True
         self._cancelar_event = threading.Event()
         self.btn_converter.configure(state="disabled")
@@ -1018,6 +1220,9 @@ class AppK7(ttk.Window):
                 arquivo_gcode,
                 self._cancelar_event,
                 self.var_suporte.get(),
+                self._quantidade_atual(),
+                self.var_suporte_fino.get(),
+                self._espessura_suporte_fino(),
             ),
             daemon=True,
         ).start()
@@ -1038,6 +1243,9 @@ class AppK7(ttk.Window):
         arquivo_gcode: Path | None,
         cancelar: threading.Event,
         tipo_suporte: str,
+        quantidade: int,
+        suporte_fino: bool,
+        suporte_fino_mm: float,
     ) -> None:
         try:
             resultado = converter_3mf_para_k7(
@@ -1049,6 +1257,9 @@ class AppK7(ttk.Window):
                 log=self._log,
                 cancelar=cancelar.is_set,
                 tipo_suporte=tipo_suporte,
+                quantidade=quantidade,
+                suporte_fino=suporte_fino,
+                suporte_fino_mm=suporte_fino_mm,
             )
         except Exception as exc:
             self._enfileirar(("erro", str(exc)))
@@ -1106,8 +1317,8 @@ class AppK7(ttk.Window):
                         lambda caminho=caminho_gcode: self._calcular_orcamento(caminho),
                     )
                     self._dialogo_pendente = (
-                        "info",
-                        f"G-code gerado em:\n{item[1].arquivo_gcode}",
+                        "sucesso",
+                        str(item[1].arquivo_gcode),
                         "Conversão concluída",
                     )
 
@@ -1122,7 +1333,7 @@ class AppK7(ttk.Window):
 
         self._mostrar_dialogo_pendente()
         try:
-            self.after(100, self._processar_fila)
+            self._job_fila = self.after(100, self._processar_fila)
         except tk.TclError:
             pass
 
@@ -1133,12 +1344,53 @@ class AppK7(ttk.Window):
         tipo, mensagem, titulo = self._dialogo_pendente
         self._dialogo_pendente = None
         try:
-            if tipo == "info":
+            if tipo == "sucesso":
+                self._mostrar_dialogo_sucesso(mensagem, titulo)
+            elif tipo == "info":
                 Messagebox.show_info(mensagem, titulo, parent=self)
             else:
                 Messagebox.show_error(mensagem, titulo, parent=self)
         except tk.TclError:
             pass
+
+    def _mostrar_dialogo_sucesso(self, caminho_gcode: str, titulo: str) -> ttk.Toplevel:
+        """Diálogo de conclusão com o crédito ao desenvolvedor linkado."""
+        dialogo = ttk.Toplevel(self)
+        dialogo.title(titulo)
+        dialogo.resizable(False, False)
+        dialogo.transient(self)
+
+        corpo = ttk.Frame(dialogo, padding=18)
+        corpo.pack(fill="both", expand=True)
+        ttk.Label(
+            corpo,
+            text=f"G-code gerado em:\n{caminho_gcode}",
+            bootstyle="primary",
+            justify="left",
+            wraplength=420,
+        ).grid(row=0, column=0, columnspan=2, sticky="w")
+        ttk.Label(corpo, text="Desenvolvedor: ", bootstyle="secondary").grid(
+            row=1, column=0, sticky="w", pady=(14, 0)
+        )
+        link = ttk.Label(
+            corpo,
+            text=NOME_DESENVOLVEDOR,
+            bootstyle="primary",
+            cursor="hand2",
+            font=("Segoe UI", 9, "underline"),
+        )
+        link.grid(row=1, column=1, sticky="w", pady=(14, 0))
+        link.bind("<Button-1>", lambda _evento: self._abrir_url(URL_LINKEDIN))
+        ttk.Button(
+            corpo, text="OK", bootstyle="success", width=10, command=dialogo.destroy
+        ).grid(row=2, column=0, columnspan=2, sticky="e", pady=(16, 0))
+
+        dialogo.update_idletasks()
+        x = self.winfo_x() + max((self.winfo_width() - dialogo.winfo_width()) // 2, 0)
+        y = self.winfo_y() + max((self.winfo_height() - dialogo.winfo_height()) // 2, 0)
+        dialogo.geometry(f"+{x}+{y}")
+        dialogo.focus_set()
+        return dialogo
 
     def _finalizar_sucesso(self, resultado: ResultadoConversao) -> None:
         self.ocupado = False

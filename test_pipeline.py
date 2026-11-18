@@ -12,6 +12,7 @@ e escreve um G-code falso.
 
 from __future__ import annotations
 
+import json
 import subprocess
 import sys
 import tempfile
@@ -256,7 +257,20 @@ def testar_tipo_suporte(diretorio: Path) -> None:
     assert "support_material_angling = 45" in texto
     assert "layer_height = 0.2" in texto
     assert texto.count("support_material = ") == 1
-    print("  [ok] perfil temporario recebe o estilo de suporte escolhido")
+
+    fino = dict(conv.TIPOS_SUPORTE["Árvore - Orgânico"])
+    fino.update(conv.parametros_suporte_fino(0.35))
+    destino_fino = diretorio / "temporario_fino.ini"
+    conv._gravar_ini_com_suporte(perfil, fino, destino_fino)
+    texto_fino = destino_fino.read_text(encoding="utf-8")
+    assert "support_material_extrusion_width = 0.35" in texto_fino
+    assert "support_material_interface_extrusion_width = 0.35" in texto_fino
+    assert "support_tree_branch_diameter = 1.4" in texto_fino
+    assert "support_tree_tip_diameter = 0.7" in texto_fino
+    assert texto_fino.count("support_material_extrusion_width = ") == 1
+    assert conv.validar_suporte_fino_mm(9) == conv.SUPORTE_FINO_MAX_MM
+    assert conv.validar_suporte_fino_mm(-1) == conv.SUPORTE_FINO_MIN_MM
+    print("  [ok] perfil temporario recebe o estilo e a espessura escolhida")
 
     modelo = diretorio / "suporte.3mf"
     criar_3mf(modelo)
@@ -276,10 +290,55 @@ def testar_tipo_suporte(diretorio: Path) -> None:
             prusa_cli=cli_falso,
             config_ini=conv.CONFIG_PADRAO,
             tipo_suporte="Árvore - Orgânico",
+            suporte_fino=True,
+            suporte_fino_mm=0.35,
         )
     assert any("support_material_style = organic" in trecho for trecho in vistos)
+    assert any("support_material_extrusion_width = 0.35" in trecho for trecho in vistos)
+    assert any("support_tree_branch_diameter = 1.4" in trecho for trecho in vistos)
     assert not list(diretorio.glob("k7_suporte_*.ini")), "ini temporário não removido"
-    print("  [ok] conversao usa o suporte escolhido e limpa o arquivo temporario")
+
+    vistos.clear()
+    with patch.object(conv, "_executar_slicer", side_effect=falso_slicer):
+        conv.converter_3mf_para_k7(
+            modelo,
+            50,
+            prusa_cli=cli_falso,
+            config_ini=conv.CONFIG_PADRAO,
+            tipo_suporte="Sem suporte",
+            suporte_fino=True,
+        )
+    assert vistos and "support_material = 0" in vistos[-1]
+    assert not any("support_material_extrusion_width" in trecho for trecho in vistos)
+    assert not list(diretorio.glob("k7_suporte_*.ini")), "ini temporário não removido"
+    print("  [ok] conversao aplica suporte fino e ignora a opcao sem suporte")
+
+
+def testar_quantidade(diretorio: Path) -> None:
+    """Várias cópias são organizadas em grade e reduzem a escala automaticamente."""
+    modelo = diretorio / "quantidade.stl"
+    trimesh.creation.box(extents=[40, 30, 20]).export(modelo)
+
+    uma = conv.analisar_arquivo(modelo, 95)
+    quatro = conv.analisar_arquivo(modelo, 95, quantidade=4)
+
+    assert uma.quantidade == 1 and quatro.quantidade == 4
+    assert quatro.colunas * quatro.linhas >= 4
+    assert quatro.fator_escala < uma.fator_escala
+    assert max(quatro.dimensoes_finais[:2]) <= conv.LIMITE_SEGURANCA_MM + 1e-6
+    por_peca = max(
+        valor * quatro.fator_escala for valor in quatro.dimensoes_originais
+    )
+    assert por_peca < conv.LIMITE_SEGURANCA_MM
+
+    try:
+        conv.validar_quantidade(0)
+    except conv.ErroConversao:
+        pass
+    else:
+        raise AssertionError("quantidade zero deveria ser rejeitada")
+    assert conv.validar_quantidade(999) == conv.QUANTIDADE_MAXIMA
+    print("  [ok] multiplas pecas cabem na mesa com escala automatica")
 
 
 def testar_calculo() -> None:
@@ -438,54 +497,128 @@ def testar_perfil_ini(diretorio: Path) -> None:
 
 
 def testar_gui() -> None:
-    from app import AppK7
+    import app as app_modulo
 
-    janela = AppK7()
-    janela.withdraw()
-    janela.update_idletasks()
-    janela.update()
-    assert janela.winfo_exists()
-    abas = [
-        janela.abas.tab(indice, "text").strip()
-        for indice in range(janela.abas.index("end"))
-    ]
-    assert any("Calc" in texto for texto in abas), abas
-    assert janela.var_suporte.get() in conv.TIPOS_SUPORTE
-    assert janela.var_margem.get() > 0
+    with tempfile.TemporaryDirectory(prefix="k7_prefs_gui_") as pasta_prefs:
+        arquivo_prefs = Path(pasta_prefs) / "k7_gui_settings.json"
+        with patch.object(app_modulo, "ARQUIVO_CONFIG", arquivo_prefs):
+            janela = app_modulo.AppK7()
+            janela.withdraw()
+            janela.update_idletasks()
+            janela.update()
+            assert janela.winfo_exists()
+            abas = [
+                janela.abas.tab(indice, "text").strip()
+                for indice in range(janela.abas.index("end"))
+            ]
+            assert any("Calc" in texto for texto in abas), abas
+            assert janela.var_suporte.get() in conv.TIPOS_SUPORTE
+            assert janela.var_margem.get() > 0
+            assert 1 <= janela.var_quantidade.get() <= conv.QUANTIDADE_MAXIMA
+            assert janela.spin_suporte_fino.winfo_manager() == "grid"
+            assert janela.var_suporte_fino_mm.get() == conv.SUPORTE_FINO_PADRAO_MM
+            assert janela.lnk_documentacao.cget("text") == "Documentação"
+            # Sem resultado, o botão de copiar não está gerenciado pelo grid.
+            assert janela.btn_copiar_orcamento.winfo_manager() == ""
 
-    with tempfile.TemporaryDirectory(prefix="k7_calc_gui_") as temporario:
-        gcode = Path(temporario) / "teste_K7.gcode"
-        gcode.write_text(
-            "; filament used [mm] = 1000.0\n"
-            "; filament used [g] = 3.0\n"
-            "; estimated printing time (normal mode) = 2h 30m 0s\n",
-            encoding="utf-8",
-        )
-        janela._calcular_orcamento(str(gcode))
-        assert janela.orcamento is not None
-        assert "PREÇO FINAL" in janela.lbl_orcamento.cget("text")
-        assert abs(janela.var_tempo_calculo.get() - 2.5) < 1e-6
+            with tempfile.TemporaryDirectory(prefix="k7_calc_gui_") as temporario:
+                gcode = Path(temporario) / "teste_K7.gcode"
+                gcode.write_text(
+                    "; filament used [mm] = 1000.0\n"
+                    "; filament used [g] = 3.0\n"
+                    "; estimated printing time (normal mode) = 2h 30m 0s\n",
+                    encoding="utf-8",
+                )
+                janela._calcular_orcamento(str(gcode))
+                assert janela.orcamento is not None
+                assert "PREÇO FINAL" in janela.lbl_orcamento.cget("text")
+                assert abs(janela.var_tempo_calculo.get() - 2.5) < 1e-6
+                assert janela.btn_copiar_orcamento.winfo_manager() == "grid"
+                janela._copiar_orcamento()
+                assert janela.clipboard_get() == janela.lbl_orcamento.cget("text")
 
-        # Tempo digitado manualmente tem prioridade sobre o valor do G-code.
-        janela._tempo_manual = True
-        janela.var_tempo_calculo.set(5.0)
-        janela._calcular_orcamento()
-        assert abs(janela.orcamento.dados.horas - 5.0) < 1e-6
+                # Tempo digitado manualmente tem prioridade sobre o valor do G-code.
+                janela._tempo_manual = True
+                janela.var_tempo_calculo.set(5.0)
+                janela._calcular_orcamento()
+                assert abs(janela.orcamento.dados.horas - 5.0) < 1e-6
 
-        # Sem tempo no G-code, usa o padrão de 1,5 h.
-        sem_tempo = Path(temporario) / "sem_tempo.gcode"
-        sem_tempo.write_text("; filament used [g] = 3.0\n", encoding="utf-8")
-        janela._tempo_manual = False
-        janela.var_tempo_calculo.set(1.5)
-        janela._calcular_orcamento(str(sem_tempo))
-        assert abs(janela.orcamento.dados.horas - 1.5) < 1e-6
+                # Sem tempo no G-code, usa o padrão de 1,5 h.
+                sem_tempo = Path(temporario) / "sem_tempo.gcode"
+                sem_tempo.write_text("; filament used [g] = 3.0\n", encoding="utf-8")
+                janela._tempo_manual = False
+                janela.var_tempo_calculo.set(1.5)
+                janela._calcular_orcamento(str(sem_tempo))
+                assert abs(janela.orcamento.dados.horas - 1.5) < 1e-6
 
-        # O resultado não deve conter linhas em branco.
-        texto = janela.lbl_orcamento.cget("text")
-        assert "\n\n" not in texto, repr(texto)
-    janela.destroy()
+                # O resultado não deve conter linhas em branco.
+                texto = janela.lbl_orcamento.cget("text")
+                assert "\n\n" not in texto, repr(texto)
+
+                # Ao limpar o resultado, o botão desaparece junto.
+                janela._limpar_orcamento()
+                assert janela.btn_copiar_orcamento.winfo_manager() == ""
+
+            # Links externos e diálogo de conclusão com crédito linkado.
+            with patch.object(app_modulo.webbrowser, "open") as abrir:
+                janela._abrir_documentacao()
+                abrir.assert_called_once_with(app_modulo.URL_DOCUMENTACAO)
+                abrir.reset_mock()
+                janela._abrir_url(app_modulo.URL_LINKEDIN)
+                abrir.assert_called_once_with(app_modulo.URL_LINKEDIN)
+
+            dialogo = janela._mostrar_dialogo_sucesso(
+                "C:/tmp/peca_K7.gcode", "Conversão concluída"
+            )
+            janela.update()
+            assert dialogo.winfo_exists()
+            assert dialogo.title() == "Conversão concluída"
+            textos: list[str] = []
+            for filho in dialogo.winfo_children():
+                for neto in filho.winfo_children():
+                    try:
+                        textos.append(neto.cget("text"))
+                    except Exception:
+                        pass
+            assert "Desenvolvedor: " in textos
+            assert app_modulo.NOME_DESENVOLVEDOR in textos
+            dialogo.destroy()
+
+            # Tamanho, quantidade e suporte fino voltam como padrão na próxima
+            # execução porque são gravados ao fechar (e ao iniciar a conversão).
+            janela.var_tamanho.set(72.5)
+            janela.var_quantidade.set(3)
+            janela.var_suporte_fino.set(True)
+            janela.var_suporte_fino_mm.set(0.4)
+            janela._salvar_config()
+            dados = json.loads(arquivo_prefs.read_text(encoding="utf-8"))
+            assert dados["tamanho"] == 72.5
+            assert dados["quantidade"] == 3
+            assert dados["suporte_fino"] is True
+            assert dados["suporte_fino_mm"] == 0.4
+            assert janela._quantidade_atual() == 3
+            assert janela._espessura_suporte_fino() == 0.4
+            janela.update()
+            janela.destroy()
+
+            # Nova execução: os valores gravados voltam como padrão.
+            janela2 = app_modulo.AppK7()
+            janela2.withdraw()
+            janela2.update_idletasks()
+            janela2.update()
+            assert janela2.var_tamanho.get() == 72.5
+            assert janela2.var_quantidade.get() == 3
+            assert janela2.var_suporte_fino.get() is True
+            assert janela2.var_suporte_fino_mm.get() == 0.4
+
+            janela2._reset_suporte_fino()
+            assert janela2.var_suporte_fino.get() is False
+            assert janela2.var_suporte_fino_mm.get() == conv.SUPORTE_FINO_PADRAO_MM
+            janela2.update()
+            janela2.destroy()
     print("  [ok] interface ttkbootstrap constroi e fecha sem erros")
-    print("  [ok] abas Configuracoes/Calc e seletor de suporte presentes")
+    print("  [ok] abas Configuracoes/Calc, suporte fino, Reset e documentacao presentes")
+    print("  [ok] ultimo tamanho/quantidade/espressura salvos como padrao")
 
 
 def main() -> None:
@@ -497,6 +630,7 @@ def main() -> None:
         testar_conversao_stl(diretorio)
         testar_multiplas_partes_e_erros(diretorio)
         testar_tipo_suporte(diretorio)
+        testar_quantidade(diretorio)
         testar_protecoes_travamento(diretorio)
         testar_preflight()
         testar_perfil_ini(diretorio)

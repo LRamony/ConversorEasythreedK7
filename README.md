@@ -4,10 +4,11 @@ Interface gráfica feita com **ttkbootstrap** sobre o tkinter. Ela:
 
 1. Lê um arquivo `.3mf` (ou `.stl`) com `trimesh`;
 2. Calcula as dimensões atuais e aplica uma **escala proporcional** para caber na mesa;
-3. Centraliza a peça em **X=50, Y=50** e encosta a base em **Z=0**;
-4. Exporta um STL temporário já ajustado;
-5. Chama o **PrusaSlicer em modo console** com o perfil `k7_config.ini` e gera o `.gcode`;
-6. Apaga o STL temporário ao final.
+3. Repete a peça quantas vezes você pedir, organizando tudo em grade e reduzindo a escala automaticamente;
+4. Centraliza o conjunto em **X=50, Y=50** e encosta a base em **Z=0**;
+5. Exporta um STL temporário já ajustado;
+6. Chama o **PrusaSlicer em modo console** com o perfil `k7_config.ini` e gera o `.gcode`;
+7. Apaga o STL temporário ao final.
 
 > Trava de segurança: nenhuma medida acima de **95 mm** é aplicada, mesmo que você digite um valor maior.
 
@@ -22,7 +23,7 @@ Interface gráfica feita com **ttkbootstrap** sobre o tkinter. Ela:
 | `k7_config.ini` | Perfil da K7 (mesa 100³, bico 0,4, 195/200 °C, mesa 0 °C, suportes automáticos) |
 | `test_pipeline.py` | Testes do pipeline e smoke test da interface |
 | `requirements.txt` | Dependências |
-| `k7_gui_settings.json` | Preferências salvas automaticamente (caminhos e filtro de arquivo) |
+| `k7_gui_settings.json` | Preferências salvas automaticamente (caminhos, filtro, último tamanho, quantidade e suporte fino) |
 
 > A interface usa **apenas o tema `bootstrap-dark`** (padrão fixo, sem seletor de temas).
 
@@ -44,10 +45,12 @@ python -m venv .venv
 Na aba **Converter**:
 
 1. Em **Arquivo de entrada**, escolha o filtro (`3MF e STL`, `Somente 3MF` ou `Somente STL`) e clique em **Procurar...**;
-2. Defina a **medida máxima** (campo numérico ou slider). A prévia mostra dimensões originais, fator de escala e dimensões finais;
-3. Em **Tipo de suporte**, escolha entre **sem suporte**, as variantes **normais** (grade, linhas, quadrados, colmeia, snug) ou as variantes **árvore/orgânicas** (padrão, reforçada, econômica);
+2. Defina a **medida máxima** (campo numérico ou slider) e a **quantidade de peças**. A prévia mostra dimensões originais, fator de escala, dimensões do conjunto e o tamanho de cada peça;
+3. Em **Tipo de suporte**, escolha entre **sem suporte**, as variantes **normais** (grade, linhas, quadrados, colmeia, snug) ou as variantes **árvore/orgânicas** (padrão, reforçada, econômica). À direita do seletor, marque **Suportes mais finos** e informe a espessura em mm (padrão `0,3`);
 4. Opcionalmente escolha a **pasta de saída** (em branco = mesma pasta do modelo). O nome gerado é `<nome>_K7.gcode`;
 5. Clique em **Converter para G-code**.
+
+O **último tamanho máximo escolhido**, a quantidade de peças e a espessura de suporte fino são salvos quando você converte ou fecha o programa, e voltam como padrão na próxima execução. O botão **Reset** ao lado do campo de espessura restaura o padrão de fábrica (opção desligada e `0,3 mm`).
 
 ### Tipo de suporte
 
@@ -55,6 +58,14 @@ O seletor da aba **Converter** escolhe o estilo de suporte. O programa **não al
 
 - **Normal**: grade, linhas, quadrados, colmeia ou ajustado (snug);
 - **Árvore (orgânico)**: padrão, reforçado (mais vertical/mais colunas) ou econômico (mais inclinado, menos material).
+
+### Suportes mais finos
+
+Ao marcar **Suportes mais finos**, o valor informado em mm (`0,15` a `0,50`, padrão `0,30`) é usado para reduzir a largura de extrusão do suporte e o diâmetro dos ramos da árvore. Por exemplo, com `0,35 mm` o `.ini` temporário recebe `support_material_extrusion_width = 0.35`, `support_material_interface_extrusion_width = 0.35`, `support_tree_branch_diameter = 1.4` e `support_tree_tip_diameter = 0.7` — o ramo é 4× a espessura e a ponta é 2×, respeitando a validação do PrusaSlicer. Vale para suporte normal e árvore, não altera o seu perfil e não tem efeito com **Sem suporte**. O último valor é lembrado; **Reset** volta para `0,30 mm` com a opção desligada.
+
+### Várias peças na mesma mesa
+
+O campo **Quantidade de peças** (de 1 a 20) distribui as cópias em uma grade com 2 mm de espaçamento. O programa testa várias combinações de colunas/linhas e escolhe a que permite o **maior tamanho possível** sem passar dos 95 mm úteis; por isso, ao aumentar a quantidade, cada peça sai menor automaticamente. A prévia mostra o conjunto (`Conjunto 2x2: ...`) e o tamanho individual (`Cada peça: ...`). Se o total de triângulos passar de 2.000.000, a conversão é recusada com uma mensagem explicando como reduzir a quantidade.
 
 ### Aba Calc — quanto cobrar pela impressão
 
@@ -69,9 +80,9 @@ A aba **Calc** lê o início e o rodapé do G-code gerado pelo PrusaSlicer (temp
 | Acabamento | R$ 2,00/peça |
 | Embalagem | R$ 1,50/peça |
 
-Após cada conversão bem-sucedida o cálculo é feito automaticamente com o G-code recém-gerado, sem botão. Para analisar um arquivo antigo, use **Procurar...**. Qualquer alteração em margem, tempo ou custos recalcula na hora. O resultado mostra cada custo, o custo total, o **preço final** com a margem e o lucro. Se o G-code não informar o peso do filamento, ele é estimado a partir dos mm usados (PLA 1,75 mm).
+Após cada conversão bem-sucedida o cálculo é feito automaticamente com o G-code recém-gerado, sem botão. Para analisar um arquivo antigo, use **Procurar...**. Qualquer alteração em margem, tempo ou custos recalcula na hora. O resultado mostra cada custo, o custo total, o **preço final** com a margem e o lucro, e o botão **Copiar resultado** (no canto superior direito do resultado) copia tudo para a área de transferência — ele só aparece quando há um resultado. Se o G-code não informar o peso do filamento, ele é estimado a partir dos mm usados (PLA 1,75 mm).
 
-O campo **Tempo de impressão (h)** mostra o tempo lido do G-code. Se o arquivo não informar o tempo, ele usa **1,5 h** por padrão e pode ser editado: o valor digitado passa a ter prioridade sobre o do G-code até você escolher outro arquivo. A prévia da peça também é automática (ao escolher o arquivo, apertar Enter ou mover o slider de escala), por isso não há mais botão "Calcular prévia".
+O campo **Tempo de impressão (h)** mostra o tempo lido do G-code. Se o arquivo não informar o tempo, ele usa **1,5 h** por padrão e pode ser editado: o valor digitado passa a ter prioridade sobre o do G-code até você escolher outro arquivo. A prévia da peça também é automática (ao escolher o arquivo, apertar Enter, mover o slider de escala ou mudar a quantidade), por isso não há mais botão "Calcular prévia".
 
 Se as linhas `; estimated printing time ...` e `; filament used ...` não existirem, ative **Verbose G-code** no PrusaSlicer em *Configurações de impressão > Opções de saída* e fatie novamente — ou apenas informe o tempo no campo editável. A aba também aceita os formatos `HH:MM:SS`, `2h 30m`, `1d 2h 3m 4s` e segundos puros (`;TIME:38846`).
 
@@ -110,7 +121,8 @@ Depois de uma falha ao gerar G-code de um `.3mf` (fatiador preso esperando uma j
 |---|---|
 | `subprocess.run` sem timeout: se o fatiador abrisse um diálogo modal ou ficasse preso, a thread esperava para sempre | Execução com `Popen` + `communicate` em fatias de 0,25 s, **prazo de 5 min** e `kill()` automático ao estourar o tempo |
 | Saída do fatiador sem limite podia encher a RAM (milhares de linhas de log) | Saída limitada às últimas 200 linhas |
-| Arquivos gigantes/malhas com milhões de triângulos esgotavam CPU e memória ao carregar | Limite de **200 MB** por arquivo e **2.000.000** de triângulos, recusados antes do processamento |
+| Arquivos gigantes/malhas com milhões de triângulos esgotavam CPU e memória ao carregar | Limite de **200 MB** por arquivo e **2.000.000** de triângulos, recusados antes do processamento (a contagem já inclui todas as cópias pedidas) |
+| Muitas cópias podiam gerar uma malha enorme ou pedidos absurdos | Quantidade limitada a **20 peças**, com aviso e redução automática; o escalonamento é escolhido para caber na mesa |
 | Fila de mensagens da interface crescia sem fim e travava o tkinter | Fila limitada a 500 itens (descarta os mais antigos), no máximo 150 itens processados por ciclo e log visual limitado a 500 linhas |
 | Diálogos de erro abertos **dentro** do loop da fila bloqueavam a janela | Avisos são enfileirados e exibidos no máximo um por ciclo, fora do loop |
 | Arrastar o slider da prévia criava várias threads lendo a mesma malha | Uma única thread de prévia por vez; resultados antigos são descartados |
@@ -142,6 +154,11 @@ converter_stl_para_k7("modelo.stl", 60)  # mesmo pipeline
 ```
 
 Os testes substituem a execução do fatiador (`_executar_slicer`) por uma função falsa, então **não é preciso ter o PrusaSlicer instalado** para validar escala, centralização, trava de 95 mm, timeout, cancelamento, limites de arquivo e a criação da interface.
+
+## Links e créditos
+
+- **Documentação**: link no canto inferior direito da janela → [README no GitHub](https://github.com/LRamony/ConversorEasythreedK7/blob/main/README.md);
+- **Desenvolvedor**: o aviso “Conversão concluída” exibe `Desenvolvedor: Lucas Ramony`, com o nome linkado ao [LinkedIn](https://www.linkedin.com/in/ramony-sabino-5a896536/).
 
 ## Gerando o `.exe`
 
