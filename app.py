@@ -15,6 +15,7 @@ import shutil
 import subprocess
 import sys
 import threading
+import time
 from datetime import datetime
 from pathlib import Path
 
@@ -50,6 +51,10 @@ def _pasta_preferencias() -> Path:
 ARQUIVO_CONFIG = _pasta_preferencias() / "k7_gui_settings.json"
 
 TEMA_PADRAO = "bootstrap-dark"
+
+MAX_ITENS_FILA = 500
+MAX_LINHAS_LOG_GUI = 500
+MAX_ITENS_POR_TICK = 150
 
 FILTROS_ARQUIVO = {
     "3MF e STL": [
@@ -96,10 +101,15 @@ class AppK7(ttk.Window):
         )
 
         self.estilo = ttk.Style()
-        self.fila: queue.Queue = queue.Queue()
+        self.fila: queue.Queue = queue.Queue(maxsize=MAX_ITENS_FILA)
         self.ocupado = False
         self.resultado: ResultadoConversao | None = None
         self._job_analise: str | None = None
+        self._cancelar_event: threading.Event | None = None
+        self._dialogo_pendente: tuple[str, str, str] | None = None
+        self._analise_geracao = 0
+        self._analise_ocupada = False
+        self._analise_pendente: tuple[str, float] | None = None
 
         self.var_arquivo = tk.StringVar(value="")
         self.var_formato = tk.StringVar(value="3MF e STL")
@@ -115,6 +125,20 @@ class AppK7(ttk.Window):
         self._aplicar_config_salva()
         self.protocol("WM_DELETE_WINDOW", self._ao_fechar)
         self.after(100, self._processar_fila)
+
+    def _enfileirar(self, item: tuple) -> None:
+        """Envia mensagens da thread para a GUI sem deixar a fila crescer sem fim."""
+        try:
+            self.fila.put_nowait(item)
+        except queue.Full:
+            try:
+                self.fila.get_nowait()
+            except queue.Empty:
+                pass
+            try:
+                self.fila.put_nowait(item)
+            except queue.Full:
+                pass
 
     # ------------------------------------------------------------------
     # Persistência das preferências
@@ -409,6 +433,15 @@ class AppK7(ttk.Window):
         )
         self.btn_converter.pack(side="left")
 
+        self.btn_cancelar = ttk.Button(
+            acoes,
+            text="Cancelar",
+            bootstyle="danger-outline",
+            command=self._cancelar_conversao,
+            state="disabled",
+        )
+        self.btn_cancelar.pack(side="left", padx=(8, 0))
+
         ttk.Button(
             acoes,
             text="Limpar log",
@@ -534,6 +567,9 @@ class AppK7(ttk.Window):
                 self._escrever_log("error", f"Falha ao salvar perfil: {exc}")
 
     def _ao_fechar(self) -> None:
+        if self._cancelar_event is not None:
+            self._cancelar_event.set()
+        self._dialogo_pendente = None
         self._salvar_config()
         self.destroy()
 
@@ -546,6 +582,7 @@ class AppK7(ttk.Window):
                 self.after_cancel(self._job_analise)
             except (ValueError, tk.TclError):
                 pass
+        self._analise_geracao += 1
         self._job_analise = self.after(350, self._analisar)
 
     def _analisar(self) -> None:
@@ -554,19 +591,27 @@ class AppK7(ttk.Window):
             self._limpar_previa()
             return
 
+        # Uma única thread de prévia por vez: arrastar o slider não pode criar
+        # dezenas de leituras simultâneas da mesma malha.
+        if self._analise_ocupada:
+            self._analise_pendente = (arquivo, self._medida_atual())
+            return
+
         self.lbl_dimensoes.configure(text="Dimensões atuais: calculando...")
-        medida = self._medida_atual()
+        self._analise_ocupada = True
         threading.Thread(
-            target=self._worker_analise, args=(arquivo, medida), daemon=True
+            target=self._worker_analise,
+            args=(arquivo, self._medida_atual(), self._analise_geracao),
+            daemon=True,
         ).start()
 
-    def _worker_analise(self, arquivo: str, medida: float) -> None:
+    def _worker_analise(self, arquivo: str, medida: float, geracao: int) -> None:
         try:
             analise = analisar_arquivo(arquivo, medida)
         except Exception as exc:  # a prévia nunca deve derrubar a interface
-            self.fila.put(("analise_erro", str(exc)))
+            self._enfileirar(("analise_erro", geracao, str(exc)))
         else:
-            self.fila.put(("analise", analise))
+            self._enfileirar(("analise", geracao, analise))
 
     def _mostrar_analise(self, analise: AnaliseMalha) -> None:
         self.lbl_dimensoes.configure(
@@ -637,16 +682,32 @@ class AppK7(ttk.Window):
             arquivo_gcode = Path(pasta) / f"{Path(arquivo).stem}_K7.gcode"
 
         self.ocupado = True
+        self._cancelar_event = threading.Event()
         self.btn_converter.configure(state="disabled")
+        self.btn_cancelar.configure(state="normal")
         self.progresso.start(12)
         self.var_status.set("Lendo malha e fatiando...")
         self._escrever_log("info", "--- Iniciando conversão ---")
 
         threading.Thread(
             target=self._worker,
-            args=(arquivo, self._medida_atual(), cli, config, arquivo_gcode),
+            args=(
+                arquivo,
+                self._medida_atual(),
+                cli,
+                config,
+                arquivo_gcode,
+                self._cancelar_event,
+            ),
             daemon=True,
         ).start()
+
+    def _cancelar_conversao(self) -> None:
+        if self._cancelar_event is not None:
+            self._cancelar_event.set()
+        self.btn_cancelar.configure(state="disabled")
+        self.var_status.set("Cancelando...")
+        self._escrever_log("warn", "Cancelamento solicitado; aguardando o fatiador encerrar.")
 
     def _worker(
         self,
@@ -655,6 +716,7 @@ class AppK7(ttk.Window):
         cli: str,
         config: str,
         arquivo_gcode: Path | None,
+        cancelar: threading.Event,
     ) -> None:
         try:
             resultado = converter_3mf_para_k7(
@@ -664,63 +726,109 @@ class AppK7(ttk.Window):
                 config_ini=config,
                 arquivo_gcode=arquivo_gcode,
                 log=self._log,
+                cancelar=cancelar.is_set,
             )
         except Exception as exc:
-            self.fila.put(("erro", str(exc)))
+            self._enfileirar(("erro", str(exc)))
         else:
-            self.fila.put(("sucesso", resultado))
+            self._enfileirar(("sucesso", resultado))
 
     def _log(self, nivel: str, mensagem: str) -> None:
-        self.fila.put(("log", nivel, mensagem))
+        self._enfileirar(("log", nivel, mensagem))
 
     # ------------------------------------------------------------------
     # Fila de mensagens (thread -> interface)
     # ------------------------------------------------------------------
     def _processar_fila(self) -> None:
+        if not self.winfo_exists():
+            return
+
+        processados = 0
         try:
-            while True:
+            while processados < MAX_ITENS_POR_TICK:
                 item = self.fila.get_nowait()
+                processados += 1
                 tipo = item[0]
+
                 if tipo == "log":
                     self._escrever_log(item[1], item[2])
-                elif tipo == "analise":
-                    self._mostrar_analise(item[1])
-                elif tipo == "analise_erro":
-                    self._limpar_previa()
-                    self._escrever_log("warn", f"Prévia indisponível: {item[1]}")
+
+                elif tipo in ("analise", "analise_erro"):
+                    if item[1] != self._analise_geracao:
+                        continue  # resultado antigo (slider mudou)
+                    self._analise_ocupada = False
+                    if tipo == "analise":
+                        self._mostrar_analise(item[2])
+                    else:
+                        self._limpar_previa()
+                        self._escrever_log("warn", f"Prévia indisponível: {item[2]}")
+                    pendente = self._analise_pendente
+                    self._analise_pendente = None
+                    if pendente is not None:
+                        self._analise_geracao += 1
+                        self._analise_ocupada = True
+                        threading.Thread(
+                            target=self._worker_analise,
+                            args=(*pendente, self._analise_geracao),
+                            daemon=True,
+                        ).start()
+
                 elif tipo == "sucesso":
                     self._finalizar_sucesso(item[1])
+                    self._dialogo_pendente = (
+                        "info",
+                        f"G-code gerado em:\n{item[1].arquivo_gcode}",
+                        "Conversão concluída",
+                    )
+
                 elif tipo == "erro":
                     self._finalizar_erro(item[1])
+                    self._dialogo_pendente = ("error", item[1], "Falha na conversão")
+
         except queue.Empty:
             pass
+        except tk.TclError:
+            return
 
+        self._mostrar_dialogo_pendente()
         try:
             self.after(100, self._processar_fila)
         except tk.TclError:
             pass
 
+    def _mostrar_dialogo_pendente(self) -> None:
+        """Mostra no máximo um aviso por tick, fora do loop de drenagem."""
+        if self._dialogo_pendente is None or not self.winfo_exists():
+            return
+        tipo, mensagem, titulo = self._dialogo_pendente
+        self._dialogo_pendente = None
+        try:
+            if tipo == "info":
+                Messagebox.show_info(mensagem, titulo, parent=self)
+            else:
+                Messagebox.show_error(mensagem, titulo, parent=self)
+        except tk.TclError:
+            pass
+
     def _finalizar_sucesso(self, resultado: ResultadoConversao) -> None:
         self.ocupado = False
+        self._cancelar_event = None
         self.btn_converter.configure(state="normal")
+        self.btn_cancelar.configure(state="disabled")
         self.progresso.stop()
         self.resultado = resultado
         self.btn_abrir.configure(state="normal")
         self.btn_pasta.configure(state="normal")
         self.var_status.set(f"Concluído: {resultado.arquivo_gcode.name}")
-        Messagebox.show_info(
-            f"G-code gerado em:\n{resultado.arquivo_gcode}",
-            "Conversão concluída",
-            parent=self,
-        )
 
     def _finalizar_erro(self, mensagem: str) -> None:
         self.ocupado = False
+        self._cancelar_event = None
         self.btn_converter.configure(state="normal")
+        self.btn_cancelar.configure(state="disabled")
         self.progresso.stop()
         self.var_status.set("Falha na conversão")
         self._escrever_log("error", f"Falha: {mensagem}")
-        Messagebox.show_error(mensagem, "Falha na conversão", parent=self)
 
     # ------------------------------------------------------------------
     # Log e utilidades
@@ -743,6 +851,9 @@ class AppK7(ttk.Window):
         self.texto_log.configure(state="normal")
         self.texto_log.insert("end", f"[{datetime.now():%H:%M:%S}] ", "tempo")
         self.texto_log.insert("end", f"{mensagem}\n", nivel)
+        total_linhas = int(self.texto_log.index("end-1c").split(".")[0])
+        if total_linhas > MAX_LINHAS_LOG_GUI:
+            self.texto_log.delete("1.0", f"{total_linhas - MAX_LINHAS_LOG_GUI}.0")
         self.texto_log.see("end")
         self.texto_log.configure(state="disabled")
 
@@ -817,8 +928,22 @@ def _executar_preflight() -> None:
         splash.update_idletasks()
         splash.update()
 
+    ultimo_tick = [0.0]
+
+    def tick() -> None:
+        # Durante a instalação silenciosa não há progresso: este callback
+        # mantém a janela respondendo (arrastar/fechar) sem gastar CPU à toa.
+        agora = time.monotonic()
+        if agora - ultimo_tick[0] < 0.1:
+            return
+        ultimo_tick[0] = agora
+        try:
+            splash.update()
+        except tk.TclError:
+            pass
+
     try:
-        avisos = verificar_e_instalar(log, progresso)
+        avisos = verificar_e_instalar(log, progresso, tick)
     finally:
         splash.destroy()
 

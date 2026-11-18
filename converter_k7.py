@@ -15,6 +15,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
@@ -28,6 +29,14 @@ LIMITE_SEGURANCA_MM = 95.0
 LARGURA_MESA_MM = 100.0
 PROFUNDIDADE_MESA_MM = 100.0
 ALTURA_MESA_MM = 100.0
+
+# Proteções contra travamentos: arquivos gigantes e saída interminável do
+# fatiador eram as principais causas de consumo de RAM/CPU sem controle.
+TAMANHO_MAXIMO_ARQUIVO_MB = 200
+MAX_FACES = 2_000_000
+MAX_LINHAS_LOG = 200
+TIMEOUT_FATIAMENTO_S = 300.0
+
 
 def _pasta_recursos() -> Path:
     """Pasta onde o .ini vem embutido dentro do executável (temporária)."""
@@ -129,6 +138,16 @@ def _carregar_e_preparar(
     log("info", f"Carregando {caminho.name}...")
 
     try:
+        tamanho_mb = caminho.stat().st_size / (1024 * 1024)
+    except OSError as exc:
+        raise ErroConversao(f"Não foi possível ler '{caminho.name}': {exc}") from exc
+    if tamanho_mb > TAMANHO_MAXIMO_ARQUIVO_MB:
+        raise ErroConversao(
+            f"Arquivo muito grande ({tamanho_mb:.0f} MB). O limite é "
+            f"{TAMANHO_MAXIMO_ARQUIVO_MB} MB para evitar travamento do computador."
+        )
+
+    try:
         cena = trimesh.load(str(caminho))
     except Exception as exc:  # trimesh levanta vários tipos de exceção
         raise ErroConversao(f"Não foi possível ler '{caminho.name}': {exc}") from exc
@@ -137,9 +156,20 @@ def _carregar_e_preparar(
         if len(cena.geometry) == 0:
             raise ErroConversao("O arquivo não contém nenhuma geometria.")
         partes = len(cena.geometry)
+        total_faces = sum(len(geometria.faces) for geometria in cena.geometry.values())
+        if total_faces > MAX_FACES:
+            raise ErroConversao(
+                f"Modelo com {total_faces:,} triângulos é pesado demais "
+                f"(limite: {MAX_FACES:,}). Simplifique o modelo antes de converter."
+            )
         malha = cena.dump(concatenate=True)
     elif isinstance(cena, trimesh.Trimesh):
         partes = 1
+        if len(cena.faces) > MAX_FACES:
+            raise ErroConversao(
+                f"Modelo com {len(cena.faces):,} triângulos é pesado demais "
+                f"(limite: {MAX_FACES:,}). Simplifique o modelo antes de converter."
+            )
         malha = cena
     else:
         raise ErroConversao("Formato de malha não suportado pelo trimesh.")
@@ -196,6 +226,70 @@ def analisar_arquivo(
     return _carregar_e_preparar(caminho, medida, log)[1]
 
 
+def _executar_slicer(
+    comando: list[str],
+    cwd: str,
+    timeout_s: float,
+    cancelar: Callable[[], bool] | None,
+    log: LogFn,
+) -> tuple[int, list[str]]:
+    """
+    Executa o fatiador sem poder travar indefinidamente.
+
+    Usa Popen + communicate em fatias curtas para poder checar cancelamento e
+    prazo. Sem isso, um fatiador com janela modal ou malha inválida deixa a
+    interface presa para sempre.
+    """
+    opcoes: dict[str, object] = {
+        "stdout": subprocess.PIPE,
+        "stderr": subprocess.STDOUT,
+        "text": True,
+        "encoding": "utf-8",
+        "errors": "replace",
+        "cwd": cwd,
+    }
+    if sys.platform == "win32":
+        opcoes["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+
+    try:
+        processo = subprocess.Popen(comando, **opcoes)
+    except FileNotFoundError as exc:
+        raise ErroConversao(f"Não foi possível executar o PrusaSlicer: {comando[0]}") from exc
+    except OSError as exc:
+        raise ErroConversao(f"Não foi possível iniciar o PrusaSlicer: {exc}") from exc
+
+    prazo = time.monotonic() + timeout_s
+    try:
+        while True:
+            if cancelar is not None and cancelar():
+                raise ErroConversao("Conversão cancelada pelo usuário.")
+            restante = prazo - time.monotonic()
+            if restante <= 0:
+                raise ErroConversao(
+                    f"O PrusaSlicer demorou mais de {timeout_s:g} segundos e foi "
+                    "encerrado. Isso costuma acontecer quando o modelo está corrompido "
+                    "ou quando o fatiador abre uma janela de erro."
+                )
+            try:
+                saida, _ = processo.communicate(timeout=min(0.25, restante))
+                break
+            except subprocess.TimeoutExpired:
+                continue
+    finally:
+        if processo.poll() is None:
+            processo.kill()
+        try:
+            processo.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            pass
+
+    linhas = (saida or "").splitlines()
+    if len(linhas) > MAX_LINHAS_LOG:
+        log("warn", f"Saída do fatiador limitada às últimas {MAX_LINHAS_LOG} linhas.")
+        linhas = linhas[-MAX_LINHAS_LOG:]
+    return processo.returncode or 0, linhas
+
+
 def converter_3mf_para_k7(
     arquivo_3mf: str | Path,
     medida_maxima_mm: float,
@@ -204,6 +298,8 @@ def converter_3mf_para_k7(
     config_ini: str | Path | None = None,
     arquivo_gcode: str | Path | None = None,
     log: LogFn = _sem_log,
+    timeout_s: float = TIMEOUT_FATIAMENTO_S,
+    cancelar: Callable[[], bool] | None = None,
 ) -> ResultadoConversao:
     """Redimensiona, centraliza e fatia o arquivo para a Easythreed K7."""
     caminho = Path(arquivo_3mf).expanduser()
@@ -237,7 +333,13 @@ def converter_3mf_para_k7(
     except OSError as exc:
         raise ErroConversao(f"Não foi possível criar a pasta de saída: {exc}") from exc
 
+    if cancelar is not None and cancelar():
+        raise ErroConversao("Conversão cancelada pelo usuário.")
+
     malha, analise = _carregar_e_preparar(caminho, medida, log)
+
+    if cancelar is not None and cancelar():
+        raise ErroConversao("Conversão cancelada pelo usuário.")
 
     descritor, stl_temporario = tempfile.mkstemp(
         prefix="k7_", suffix=".stl", dir=str(destino.parent)
@@ -260,28 +362,18 @@ def converter_3mf_para_k7(
         log("debug", "Comando: " + " ".join(f'"{argumento}"' for argumento in comando))
         log("info", "Fatiando com o PrusaSlicer (pode levar alguns segundos)...")
 
-        try:
-            processo = subprocess.run(
-                comando,
-                check=True,
-                capture_output=True,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-                cwd=str(destino.parent),
-            )
-        except FileNotFoundError as exc:
-            raise ErroConversao(f"Não foi possível executar o PrusaSlicer: {cli}") from exc
-        except subprocess.CalledProcessError as exc:
-            detalhes = (exc.stderr or exc.stdout or "").strip()
-            log("error", f"O PrusaSlicer encerrou com código {exc.returncode}.")
-            for linha in detalhes.splitlines()[-20:]:
-                log("error", linha)
-            raise ErroConversao("O fatiamento falhou. Confira o log para mais detalhes.") from exc
-
-        for linha in (processo.stdout or "").splitlines():
+        codigo, linhas = _executar_slicer(
+            comando, str(destino.parent), timeout_s, cancelar, log
+        )
+        for linha in linhas:
             if linha.strip():
                 log("debug", linha.strip())
+
+        if codigo != 0:
+            log("error", f"O PrusaSlicer encerrou com código {codigo}.")
+            for linha in linhas[-20:]:
+                log("error", linha)
+            raise ErroConversao("O fatiamento falhou. Confira o log para mais detalhes.")
 
         if not destino.is_file() or destino.stat().st_size == 0:
             raise ErroConversao(

@@ -5,9 +5,9 @@ Uso (sempre dentro do venv):
     .venv\Scripts\python.exe test_pipeline.py           # testes do núcleo
     .venv\Scripts\python.exe test_pipeline.py --gui     # + smoke test da GUI
 
-Como o PrusaSlicer não é necessário para os testes, subprocess.run é
-substituído por uma função que confere o comando montado e escreve um
-G-code falso.
+Como o PrusaSlicer não é necessário para os testes, a execução do fatiador
+(_executar_slicer) é substituída por uma função que confere o comando montado
+e escreve um G-code falso.
 """
 
 from __future__ import annotations
@@ -56,7 +56,7 @@ def testar_conversao_completa(diretorio: Path) -> None:
     comandos: list[list[str]] = []
     mensagens: list[tuple[str, str]] = []
 
-    def falso_slicer(comando: list[str], **_kwargs):
+    def falso_slicer(comando: list[str], *_args, **_kwargs):
         comandos.append(comando)
         assert comando[0] == str(cli_falso)
         assert comando[1] == "--export-gcode"
@@ -72,9 +72,9 @@ def testar_conversao_completa(diretorio: Path) -> None:
         verificar(malha_fatiada, 60.0)
 
         destino.write_text("; gcode falso\nG28\n", encoding="utf-8")
-        return subprocess.CompletedProcess(comando, 0, "slicer falso: ok", "")
+        return 0, ["slicer falso: ok"]
 
-    with patch.object(conv.subprocess, "run", side_effect=falso_slicer):
+    with patch.object(conv, "_executar_slicer", side_effect=falso_slicer):
         resultado = conv.converter_3mf_para_k7(
             modelo,
             60,
@@ -99,14 +99,14 @@ def testar_trava_seguranca(diretorio: Path) -> None:
     cli_falso = diretorio / "cli.exe"
     cli_falso.write_bytes(b"falso")
 
-    def falso_slicer(comando: list[str], **_kwargs):
+    def falso_slicer(comando: list[str], *_args, **_kwargs):
         stl = Path(comando[-1])
         verificar(trimesh.load(str(stl)), 95.0)
         Path(comando[comando.index("--output") + 1]).write_text("; ok\n", encoding="utf-8")
-        return subprocess.CompletedProcess(comando, 0, "", "")
+        return 0, []
 
     mensagens: list[str] = []
-    with patch.object(conv.subprocess, "run", side_effect=falso_slicer):
+    with patch.object(conv, "_executar_slicer", side_effect=falso_slicer):
         resultado = conv.converter_3mf_para_k7(
             modelo,
             200,
@@ -131,12 +131,12 @@ def testar_conversao_stl(diretorio: Path) -> None:
     cli_falso = diretorio / "cli_stl.exe"
     cli_falso.write_bytes(b"falso")
 
-    def falso_slicer(comando: list[str], **_kwargs):
+    def falso_slicer(comando: list[str], *_args, **_kwargs):
         verificar(trimesh.load(str(Path(comando[-1]))), 70.0)
         Path(comando[comando.index("--output") + 1]).write_text("; ok\n", encoding="utf-8")
-        return subprocess.CompletedProcess(comando, 0, "", "")
+        return 0, []
 
-    with patch.object(conv.subprocess, "run", side_effect=falso_slicer):
+    with patch.object(conv, "_executar_slicer", side_effect=falso_slicer):
         resultado = conv.converter_stl_para_k7(
             modelo, 70, prusa_cli=cli_falso, config_ini=conv.CONFIG_PADRAO
         )
@@ -168,6 +168,77 @@ def testar_multiplas_partes_e_erros(diretorio: Path) -> None:
         print("  [ok] medida invalida rejeitada")
     else:
         raise AssertionError("esperava ErroConversao para medida zero")
+
+
+def testar_protecoes_travamento(diretorio: Path) -> None:
+    """Confere timeout, cancelamento e limites que evitam travar o PC."""
+    modelo = diretorio / "protecoes.3mf"
+    criar_3mf(modelo)
+    cli_falso = diretorio / "cli_protecoes.exe"
+    cli_falso.write_bytes(b"falso")
+
+    # Cancelamento antes de qualquer trabalho pesado.
+    try:
+        conv.converter_3mf_para_k7(
+            modelo,
+            50,
+            prusa_cli=cli_falso,
+            config_ini=conv.CONFIG_PADRAO,
+            cancelar=lambda: True,
+        )
+    except conv.ErroConversao as exc:
+        assert "cancelada" in str(exc).lower(), exc
+    else:
+        raise AssertionError("esperava ErroConversao ao cancelar")
+    print("  [ok] cancelamento interrompe a conversao")
+
+    # Arquivo acima do limite é recusado antes de carregar a malha.
+    with patch.object(conv, "TAMANHO_MAXIMO_ARQUIVO_MB", 0.0001):
+        try:
+            conv.analisar_arquivo(modelo, 50)
+        except conv.ErroConversao as exc:
+            assert "grande" in str(exc).lower(), exc
+        else:
+            raise AssertionError("esperava ErroConversao para arquivo grande")
+    print("  [ok] arquivo muito grande e recusado")
+
+    # Malha com triângulos acima do limite também é recusada.
+    with patch.object(conv, "MAX_FACES", 1):
+        try:
+            conv.analisar_arquivo(modelo, 50)
+        except conv.ErroConversao as exc:
+            assert "tri" in str(exc).lower(), exc
+        else:
+            raise AssertionError("esperava ErroConversao para malha pesada")
+    print("  [ok] malha com muitos triangulos e recusada")
+
+    # Fatiador que nunca responde é encerrado no prazo.
+    class ProcessoPreso:
+        returncode: int | None = None
+
+        def poll(self):
+            return None
+
+        def communicate(self, timeout=None):
+            raise subprocess.TimeoutExpired(["fake"], timeout)
+
+        def kill(self):
+            self.returncode = -9
+
+        def wait(self, timeout=None):
+            self.returncode = -9
+            return self.returncode
+
+    with patch.object(conv.subprocess, "Popen", return_value=ProcessoPreso()):
+        try:
+            conv._executar_slicer(
+                ["fake"], str(diretorio), 0.05, None, lambda _n, _m: None
+            )
+        except conv.ErroConversao as exc:
+            assert "demorou" in str(exc).lower(), exc
+        else:
+            raise AssertionError("esperava ErroConversao por timeout")
+    print("  [ok] fatiador preso e encerrado por timeout")
 
 
 def testar_preflight() -> None:
@@ -239,6 +310,7 @@ def main() -> None:
         testar_trava_seguranca(diretorio)
         testar_conversao_stl(diretorio)
         testar_multiplas_partes_e_erros(diretorio)
+        testar_protecoes_travamento(diretorio)
         testar_preflight()
         testar_perfil_ini(diretorio)
 

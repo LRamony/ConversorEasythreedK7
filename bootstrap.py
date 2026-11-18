@@ -17,6 +17,7 @@ import os
 import subprocess
 import sys
 import tempfile
+import time
 import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
@@ -34,6 +35,10 @@ PRUSA_SHA_FALLBACK = "7862babe08627be87120356dc9f443c094652c1f151a78ff234b0e461c
 
 VC_DOWNLOAD = "https://aka.ms/vs/17/release/vc_redist.x64.exe"
 VC_PAGINA = "https://learn.microsoft.com/cpp/windows/latest-supported-vc-redist"
+
+DOWNLOAD_MAX_MB = 400
+DOWNLOAD_PRAZO_S = 600
+INSTALACAO_PRAZO_S = 600
 
 # O perfil da K7 é copiado do arquivo embutido no .exe. Caso o arquivo embutido
 # esteja ausente, ele é recriado com estes limites (que são os mesmos do
@@ -60,6 +65,7 @@ end_gcode = M104 S0 ; turn off temperature\\nG28 X0 ; home X axis\\nM84 ; disabl
 
 LogFn = Callable[[str], None]
 ProgressoFn = Callable[[int], None]
+TickFn = Callable[[], None]
 
 
 @dataclass(frozen=True)
@@ -90,45 +96,80 @@ def _obter_instalador_prusa() -> tuple[str, str]:
 
 
 def _baixar(
-    url: str, destino: Path, log: LogFn, progresso: ProgressoFn
+    url: str,
+    destino: Path,
+    log: LogFn,
+    progresso: ProgressoFn,
+    tick: TickFn | None = None,
 ) -> str:
-    """Baixa com barra de progresso e devolve o SHA-256 do arquivo."""
+    """Baixa com progresso, prazo e limite de tamanho (devolve o SHA-256)."""
     requisicao = urllib.request.Request(url, headers={"User-Agent": "ConversorK7/1.0"})
     sha = hashlib.sha256()
-    with urllib.request.urlopen(requisicao, timeout=120) as resposta, destino.open(
-        "wb"
-    ) as arquivo:
-        total = int(resposta.headers.get("Content-Length") or 0)
-        lido = 0
-        while True:
-            bloco = resposta.read(256 * 1024)
-            if not bloco:
-                break
-            arquivo.write(bloco)
-            sha.update(bloco)
-            lido += len(bloco)
-            if total:
-                progresso(min(96, int(lido / total * 100)))
+    inicio = time.monotonic()
+    limite = DOWNLOAD_MAX_MB * 1024 * 1024
+    try:
+        with urllib.request.urlopen(requisicao, timeout=60) as resposta, destino.open(
+            "wb"
+        ) as arquivo:
+            total = int(resposta.headers.get("Content-Length") or 0)
+            lido = 0
+            while True:
+                bloco = resposta.read(256 * 1024)
+                if not bloco:
+                    break
+                arquivo.write(bloco)
+                sha.update(bloco)
+                lido += len(bloco)
+                if lido > limite:
+                    raise OSError(
+                        f"download acima de {DOWNLOAD_MAX_MB} MB foi interrompido"
+                    )
+                if time.monotonic() - inicio > DOWNLOAD_PRAZO_S:
+                    raise TimeoutError("download excedeu o tempo limite")
+                if total:
+                    progresso(min(96, int(lido / total * 100)))
+                if tick:
+                    tick()
+    except Exception:
+        destino.unlink(missing_ok=True)
+        raise
     return sha.hexdigest()
 
 
-def _instalar_silencioso(instalador: Path, argumentos: list[str]) -> tuple[bool, str]:
+def _instalar_silencioso(
+    instalador: Path, argumentos: list[str], tick: TickFn | None = None
+) -> tuple[bool, str]:
     if sys.platform != "win32":
         return False, "instalação automática disponível apenas no Windows"
     try:
-        processo = subprocess.run(
+        processo = subprocess.Popen(
             [str(instalador), *argumentos],
-            check=False,
-            timeout=900,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
         )
     except Exception as exc:
+        return False, str(exc)
+
+    inicio = time.monotonic()
+    try:
+        while processo.poll() is None:
+            if time.monotonic() - inicio > INSTALACAO_PRAZO_S:
+                processo.kill()
+                processo.wait()
+                return False, "tempo limite atingido ao instalar"
+            if tick:
+                tick()
+            time.sleep(0.2)
+    except Exception as exc:
+        if processo.poll() is None:
+            processo.kill()
         return False, str(exc)
     return processo.returncode == 0, f"código de saída {processo.returncode}"
 
 
-def _verificar_vc(log: LogFn, progresso: ProgressoFn) -> AvisoDependencia | None:
+def _verificar_vc(
+    log: LogFn, progresso: ProgressoFn, tick: TickFn | None = None
+) -> AvisoDependencia | None:
     """Visual C++ é necessário para alguns módulos nativos do Python."""
     if sys.platform != "win32":
         return None
@@ -144,9 +185,9 @@ def _verificar_vc(log: LogFn, progresso: ProgressoFn) -> AvisoDependencia | None
         log("Visual C++ Redistributable não encontrado — baixando...")
         progresso(97)
         destino = Path(tempfile.gettempdir()) / "vc_redist_x64_k7.exe"
-        _baixar(VC_DOWNLOAD, destino, log, progresso)
+        _baixar(VC_DOWNLOAD, destino, log, progresso, tick)
         ok, detalhe = _instalar_silencioso(
-            destino, ["/install", "/quiet", "/norestart"]
+            destino, ["/install", "/quiet", "/norestart"], tick
         )
         destino.unlink(missing_ok=True)
         if ok:
@@ -202,7 +243,7 @@ def garantir_config_k7(log: LogFn) -> AvisoDependencia | None:
 
 
 def verificar_e_instalar(
-    log: LogFn, progresso: ProgressoFn
+    log: LogFn, progresso: ProgressoFn, tick: TickFn | None = None
 ) -> list[AvisoDependencia]:
     """
     Garante que o PrusaSlicer exista antes de abrir a janela principal.
@@ -227,7 +268,7 @@ def verificar_e_instalar(
 
             log("Baixando o PrusaSlicer (aprox. 100 MB)...")
             destino = Path(tempfile.gettempdir()) / "PrusaSlicer_setup_k7.exe"
-            sha_obtido = _baixar(url, destino, log, progresso)
+            sha_obtido = _baixar(url, destino, log, progresso, tick)
 
             if sha_esperado and sha_obtido.lower() != sha_esperado.lower():
                 raise ValueError("o SHA-256 do arquivo baixado não confere")
@@ -237,6 +278,7 @@ def verificar_e_instalar(
             ok, detalhe = _instalar_silencioso(
                 destino,
                 ["/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/SP-"],
+                tick,
             )
             destino.unlink(missing_ok=True)
 
@@ -259,7 +301,7 @@ def verificar_e_instalar(
                 )
             )
 
-    aviso_vc = _verificar_vc(log, progresso)
+    aviso_vc = _verificar_vc(log, progresso, tick)
     if aviso_vc:
         avisos.append(aviso_vc)
 

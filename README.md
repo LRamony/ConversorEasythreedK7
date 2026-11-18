@@ -74,6 +74,23 @@ Na aba **Configurações**, informe:
 
 O botão **Abrir G-code** abre o arquivo gerado no programa padrão do sistema.
 
+## Proteções contra travamento
+
+Depois de uma falha ao gerar G-code de um `.3mf` (fatiador preso esperando uma janela de erro), o programa e até o PC podiam travar. As causas encontradas e as correções aplicadas:
+
+| Causa do travamento | Correção |
+|---|---|
+| `subprocess.run` sem timeout: se o fatiador abrisse um diálogo modal ou ficasse preso, a thread esperava para sempre | Execução com `Popen` + `communicate` em fatias de 0,25 s, **prazo de 5 min** e `kill()` automático ao estourar o tempo |
+| Saída do fatiador sem limite podia encher a RAM (milhares de linhas de log) | Saída limitada às últimas 200 linhas |
+| Arquivos gigantes/malhas com milhões de triângulos esgotavam CPU e memória ao carregar | Limite de **200 MB** por arquivo e **2.000.000** de triângulos, recusados antes do processamento |
+| Fila de mensagens da interface crescia sem fim e travava o tkinter | Fila limitada a 500 itens (descarta os mais antigos), no máximo 150 itens processados por ciclo e log visual limitado a 500 linhas |
+| Diálogos de erro abertos **dentro** do loop da fila bloqueavam a janela | Avisos são enfileirados e exibidos no máximo um por ciclo, fora do loop |
+| Arrastar o slider da prévia criava várias threads lendo a mesma malha | Uma única thread de prévia por vez; resultados antigos são descartados |
+| Download/instalação do preflight bloqueavam a tela por até 15 min | Download com prazo (10 min) e limite (400 MB), instalação com prazo (10 min), `kill()` no timeout e splash atualizado por um callback `tick` |
+| Não havia como interromper uma conversão já iniciada | Botão **Cancelar** encerra o fatiador; fechar a janela também cancela |
+
+Na prática: uma conversão problemática agora termina com uma mensagem clara (ou é cancelada), em vez de deixar o programa sem responder.
+
 ## Uso por linha de comando / código
 
 ```powershell
@@ -96,7 +113,7 @@ converter_stl_para_k7("modelo.stl", 60)  # mesmo pipeline
 .\.venv\Scripts\python.exe test_pipeline.py --gui     # núcleo + janela
 ```
 
-Os testes substituem o `subprocess.run` por uma função falsa, então **não é preciso ter o PrusaSlicer instalado** para validar escala, centralização, trava de 95 mm, limpeza do STL temporário e a criação da interface.
+Os testes substituem a execução do fatiador (`_executar_slicer`) por uma função falsa, então **não é preciso ter o PrusaSlicer instalado** para validar escala, centralização, trava de 95 mm, timeout, cancelamento, limites de arquivo e a criação da interface.
 
 ## Gerando o `.exe`
 
