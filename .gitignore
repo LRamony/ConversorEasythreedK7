@@ -1,0 +1,9 @@
+.venv/
+__pycache__/
+*.pyc
+k7_gui_settings.json
+temp_k7.stl
+k7_*.stl
+*_K7.gcode
+/dist/
+/build/

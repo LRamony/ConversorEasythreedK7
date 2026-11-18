@@ -1,0 +1,6 @@
+trimesh>=4.0
+numpy>=1.24
+lxml>=4.9
+networkx>=3.0
+ttkbootstrap>=1.10
+pillow>=9.0
