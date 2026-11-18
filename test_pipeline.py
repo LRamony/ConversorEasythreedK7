@@ -254,7 +254,8 @@ def testar_tipo_suporte(diretorio: Path) -> None:
     )
     texto = destino.read_text(encoding="utf-8")
     assert "support_material_style = organic" in texto
-    assert "support_material_angling = 45" in texto
+    assert "support_tree_angle = 40" in texto
+    assert "support_tree_angle_slow = 25" in texto
     assert "layer_height = 0.2" in texto
     assert texto.count("support_material = ") == 1
 
@@ -265,12 +266,18 @@ def testar_tipo_suporte(diretorio: Path) -> None:
     texto_fino = destino_fino.read_text(encoding="utf-8")
     assert "support_material_extrusion_width = 0.35" in texto_fino
     assert "support_material_interface_extrusion_width = 0.35" in texto_fino
-    assert "support_tree_branch_diameter = 1.4" in texto_fino
-    assert "support_tree_tip_diameter = 0.7" in texto_fino
+    assert "support_material_with_sheath = 0" in texto_fino
+    assert "support_tree_branch_diameter = 1.05" in texto_fino
+    assert "support_tree_tip_diameter = 0.53" in texto_fino
+    assert "support_tree_branch_diameter_angle = 0" in texto_fino
+    assert "support_tree_branch_diameter_double_wall = 0" in texto_fino
+    assert "support_tree_branch_distance = 2" in texto_fino
+    assert "support_tree_top_rate = 5%" in texto_fino
     assert texto_fino.count("support_material_extrusion_width = ") == 1
     assert conv.validar_suporte_fino_mm(9) == conv.SUPORTE_FINO_MAX_MM
     assert conv.validar_suporte_fino_mm(-1) == conv.SUPORTE_FINO_MIN_MM
-    print("  [ok] perfil temporario recebe o estilo e a espessura escolhida")
+    assert conv.SUPORTE_FINO_MIN_MM > 0.2  # acima da altura de camada do perfil
+    print("  [ok] perfil temporario afina a arvore e impede tronco grosso")
 
     modelo = diretorio / "suporte.3mf"
     criar_3mf(modelo)
@@ -295,7 +302,8 @@ def testar_tipo_suporte(diretorio: Path) -> None:
         )
     assert any("support_material_style = organic" in trecho for trecho in vistos)
     assert any("support_material_extrusion_width = 0.35" in trecho for trecho in vistos)
-    assert any("support_tree_branch_diameter = 1.4" in trecho for trecho in vistos)
+    assert any("support_tree_branch_diameter = 1.05" in trecho for trecho in vistos)
+    assert any("support_tree_branch_diameter_angle = 0" in trecho for trecho in vistos)
     assert not list(diretorio.glob("k7_suporte_*.ini")), "ini temporário não removido"
 
     vistos.clear()

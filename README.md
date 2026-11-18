@@ -54,14 +54,27 @@ O **último tamanho máximo escolhido**, a quantidade de peças e a espessura de
 
 ### Tipo de suporte
 
-O seletor da aba **Converter** escolhe o estilo de suporte. O programa **não altera** o seu `k7_config.ini`: ele copia o perfil para um arquivo temporário, aplica as chaves do PrusaSlicer (`support_material_style`, `support_material_angling`, etc.) e apaga esse arquivo ao final da conversão.
+O seletor da aba **Converter** escolhe o estilo de suporte. O programa **não altera** o seu `k7_config.ini`: ele copia o perfil para um arquivo temporário, aplica as chaves corretas do PrusaSlicer (`support_material_style`, `support_tree_angle`, `support_tree_angle_slow`, etc.) e apaga esse arquivo ao final da conversão.
 
 - **Normal**: grade, linhas, quadrados, colmeia ou ajustado (snug);
-- **Árvore (orgânico)**: padrão, reforçado (mais vertical/mais colunas) ou econômico (mais inclinado, menos material).
+- **Árvore (orgânico)**: padrão (`40°`/`25°`), reforçado (`30°`/`20°`, mais vertical) ou econômico (`55°`/`35°` e densidade de ponta `5%`).
+
+> Correção: a versão anterior usava `support_material_angling`, que não é uma chave reconhecida pelo PrusaSlicer e era ignorada. Agora o ângulo é aplicado de verdade com `support_tree_angle` e `support_tree_angle_slow`.
 
 ### Suportes mais finos
 
-Ao marcar **Suportes mais finos**, o valor informado em mm (`0,15` a `0,50`, padrão `0,30`) é usado para reduzir a largura de extrusão do suporte e o diâmetro dos ramos da árvore. Por exemplo, com `0,35 mm` o `.ini` temporário recebe `support_material_extrusion_width = 0.35`, `support_material_interface_extrusion_width = 0.35`, `support_tree_branch_diameter = 1.4` e `support_tree_tip_diameter = 0.7` — o ramo é 4× a espessura e a ponta é 2×, respeitando a validação do PrusaSlicer. Vale para suporte normal e árvore, não altera o seu perfil e não tem efeito com **Sem suporte**. O último valor é lembrado; **Reset** volta para `0,30 mm` com a opção desligada.
+Ao marcar **Suportes mais finos**, o valor informado em mm (`0,22` a `0,50`, padrão `0,30`) controla a extrusão **e** a grossura real da árvore. O limite inferior passou a `0,22 mm` porque o perfil usa camadas de `0,20 mm` — valores menores são recusados pelo PrusaSlicer.
+
+O que muda no `.ini` temporário:
+
+- `support_material_extrusion_width` e `support_material_interface_extrusion_width` = valor escolhido;
+- `support_material_with_sheath = 0` (sem bainha extra);
+- `support_tree_branch_diameter` = **3×** o valor e `support_tree_tip_diameter` = **1,5×** (com `0,35 mm`: `1.05` e `0.53`). Isso atende à validação do PrusaSlicer: ponta ≥ extrusão e ramo ≥ 2× extrusão;
+- `support_tree_branch_diameter_angle = 0` — **o ponto principal**: o tronco não engrossa progressivamente até a base como no padrão `5°`;
+- `support_tree_branch_diameter_double_wall = 0` — desativa paredes duplas;
+- `support_tree_branch_distance = 2` e `support_tree_top_rate = 5%` — menos pontos de contato com a peça, mais fácil de soltar e menos material.
+
+Vale para suporte normal e árvore, não altera o seu perfil e não tem efeito com **Sem suporte**. O último valor é lembrado; **Reset** volta para `0,30 mm` com a opção desligada.
 
 ### Várias peças na mesma mesa
 

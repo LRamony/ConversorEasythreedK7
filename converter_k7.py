@@ -102,20 +102,26 @@ TIPOS_SUPORTE: dict[str, dict[str, str]] = {
         "support_material": "1",
         "support_material_auto": "1",
         "support_material_style": "organic",
-        "support_material_angling": "45",
+        # Chaves corretas do PrusaSlicer (a antiga `support_material_angling`
+        # não era reconhecida e ignorava o ângulo escolhido).
+        "support_tree_angle": "40",
+        "support_tree_angle_slow": "25",
     },
     "Árvore - Orgânico reforçado": {
         "support_material": "1",
         "support_material_auto": "1",
         "support_material_style": "organic",
-        "support_material_angling": "35",
+        "support_tree_angle": "30",
+        "support_tree_angle_slow": "20",
         "support_material_enforce_layers": "2",
     },
     "Árvore - Orgânico econômico": {
         "support_material": "1",
         "support_material_auto": "1",
         "support_material_style": "organic",
-        "support_material_angling": "60",
+        "support_tree_angle": "55",
+        "support_tree_angle_slow": "35",
+        "support_tree_top_rate": "5%",
         "support_material_threshold": "55",
     },
 }
@@ -123,8 +129,10 @@ SUPORTE_PADRAO = "Normal - Grade"
 
 # Aplicado somente quando a opção "Suportes mais finos" está ligada e o tipo
 # escolhido realmente gera suporte. Vale para suporte normal e para árvore.
+# O mínimo precisa ficar acima da altura de camada do perfil (0,2 mm), senão
+# o PrusaSlicer recusa a extrusion com "too low to be printable".
 SUPORTE_FINO_PADRAO_MM = 0.3
-SUPORTE_FINO_MIN_MM = 0.15
+SUPORTE_FINO_MIN_MM = 0.22
 SUPORTE_FINO_MAX_MM = 0.5
 
 LogFn = Callable[[str, str], None]
@@ -159,15 +167,36 @@ def validar_suporte_fino_mm(valor: float, log: LogFn = _sem_log) -> float:
     return limitado
 
 
+def _mm(valor: float) -> str:
+    """Formata milímetros com duas casas, arredondando metades para cima."""
+    return f"{round(valor + 1e-9, 2):g}"
+
+
 def parametros_suporte_fino(espessura_mm: float) -> dict[str, str]:
-    """Monta as chaves do PrusaSlicer a partir da espessura escolhida."""
+    """Monta as chaves do PrusaSlicer a partir da espessura escolhida.
+
+    Além de afinar a extrusão, esta opção impede que a árvore engrosse:
+    - ``support_tree_branch_diameter_angle = 0`` mantém o ramo uniforme da
+      ponta até a base (o padrão 5° engrossa o tronco);
+    - ``support_tree_branch_diameter_double_wall = 0`` desliga paredes duplas;
+    - ``support_tree_branch_distance`` e ``support_tree_top_rate`` reduzem
+      pontos de contato com a peça, facilitando a remoção;
+    - ``support_material_with_sheath = 0`` evita a bainha extra no suporte.
+
+    O PrusaSlicer exige ponta >= extrusão e ramo >= 2x a extrusão. Usamos
+    1,5x e 3x, respectivamente, para ficar dentro da validação com folga.
+    """
     espessura = validar_suporte_fino_mm(espessura_mm)
     return {
-        "support_material_extrusion_width": f"{espessura:g}",
-        "support_material_interface_extrusion_width": f"{espessura:g}",
-        # PrusaSlicer exige ponta >= largura e ramo >= 2x a largura.
-        "support_tree_branch_diameter": f"{round(espessura * 4, 2):g}",
-        "support_tree_tip_diameter": f"{round(espessura * 2, 2):g}",
+        "support_material_extrusion_width": _mm(espessura),
+        "support_material_interface_extrusion_width": _mm(espessura),
+        "support_material_with_sheath": "0",
+        "support_tree_branch_diameter": _mm(espessura * 3),
+        "support_tree_tip_diameter": _mm(espessura * 1.5),
+        "support_tree_branch_diameter_angle": "0",
+        "support_tree_branch_diameter_double_wall": "0",
+        "support_tree_branch_distance": "2",
+        "support_tree_top_rate": "5%",
     }
 
 
@@ -592,7 +621,7 @@ def converter_3mf_para_k7(
             raise
         config_efetiva = ini_suporte
         detalhe = (
-            f" (mais fino: {espessura_fina:g} mm)"
+            f" (mais fino: {espessura_fina:g} mm; tronco uniforme, sem parede dupla)"
             if espessura_fina is not None
             else ""
         )
