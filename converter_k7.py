@@ -127,7 +127,20 @@ TIPOS_SUPORTE: dict[str, dict[str, str]] = {
 }
 SUPORTE_PADRAO = "Normal - Grade"
 
-# Aplicado somente quando a opção "Suportes mais finos" está ligada e o tipo
+# Ajustes de impressão expostos na aba "Ajustes de impressão".
+# chave: (mínimo, máximo, padrão). Todos são inteiros; preenchimento é %.
+LIMITES_IMPRESSAO: dict[str, tuple[int, int, int]] = {
+    "fill_density": (5, 100, 15),
+    "perimeter_speed": (10, 60, 30),
+    "infill_speed": (10, 80, 35),
+    "travel_speed": (20, 120, 60),
+    "temperature": (180, 230, 195),
+    "first_layer_temperature": (180, 230, 200),
+    "bed_temperature": (0, 80, 0),
+    "first_layer_bed_temperature": (0, 80, 0),
+}
+
+# Aplicado somente quando "Ajustar diâmetro do suporte" está ligado e o tipo
 # escolhido realmente gera suporte. O valor informado na interface é o
 # DIÂMETRO DO RAMO/ÁRVORE, não a largura de extrusão.
 SUPORTE_FINO_PADRAO_MM = 0.9
@@ -156,9 +169,9 @@ def validar_suporte_fino_mm(valor: float, log: LogFn = _sem_log) -> float:
     try:
         diametro = float(valor)
     except (TypeError, ValueError) as exc:
-        raise ErroConversao("Informe um diâmetro válido para o suporte fino.") from exc
+        raise ErroConversao("Informe um diâmetro válido para o suporte.") from exc
     if not math.isfinite(diametro):
-        raise ErroConversao("O diâmetro do suporte fino deve ser um número válido.")
+        raise ErroConversao("O diâmetro do suporte deve ser um número válido.")
 
     arredondada = round(diametro, 2)
     limitado = min(max(arredondada, SUPORTE_FINO_MIN_MM), SUPORTE_FINO_MAX_MM)
@@ -210,6 +223,66 @@ def parametros_suporte_fino(diametro_mm: float) -> dict[str, str]:
         "support_tree_branch_distance": "2",
         "support_tree_top_rate": "5%",
     }
+
+
+def limitar_impressao(chave: str, valor: float, log: LogFn = _sem_log) -> int:
+    """Aplica o limite seguro de um ajuste rápido e devolve um inteiro."""
+    if chave not in LIMITES_IMPRESSAO:
+        raise ErroConversao(f"Ajuste de impressão desconhecido: {chave}")
+    try:
+        numero = float(valor)
+    except (TypeError, ValueError) as exc:
+        raise ErroConversao(f"Valor inválido para {chave}: {valor!r}") from exc
+    if not math.isfinite(numero):
+        raise ErroConversao(f"Valor inválido para {chave}: {valor!r}")
+
+    minimo, maximo, _padrao = LIMITES_IMPRESSAO[chave]
+    inteiro = int(round(numero))
+    limitado = min(max(inteiro, minimo), maximo)
+    if limitado != inteiro:
+        log(
+            "warn",
+            f"{chave} = {inteiro} ajustado para {limitado} "
+            f"(limite: {minimo} a {maximo}).",
+        )
+    return limitado
+
+
+def ler_parametros_impressao(config_ini: str | Path) -> dict[str, int]:
+    """Lê os ajustes de impressão do perfil, com padrões e limites seguros."""
+    valores = {
+        chave: padrao for chave, (_minimo, _maximo, padrao) in LIMITES_IMPRESSAO.items()
+    }
+    try:
+        linhas = Path(config_ini).expanduser().read_text(
+            encoding="utf-8", errors="replace"
+        ).splitlines()
+    except OSError:
+        return valores
+
+    for linha in linhas:
+        texto = linha.strip()
+        if not texto or texto.startswith(("#", ";")) or "=" not in texto:
+            continue
+        chave, bruto = (parte.strip() for parte in texto.split("=", 1))
+        if chave not in LIMITES_IMPRESSAO:
+            continue
+        try:
+            valores[chave] = limitar_impressao(chave, bruto.rstrip("%"))
+        except ErroConversao:
+            continue
+    return valores
+
+
+def parametros_config_impressao(
+    valores: dict[str, float], log: LogFn = _sem_log
+) -> dict[str, str]:
+    """Converte os ajustes da GUI nas chaves correspondentes do PrusaSlicer."""
+    resultado: dict[str, str] = {}
+    for chave, (_minimo, _maximo, padrao) in LIMITES_IMPRESSAO.items():
+        numero = limitar_impressao(chave, valores.get(chave, padrao), log)
+        resultado[chave] = f"{numero}%" if chave == "fill_density" else str(numero)
+    return resultado
 
 
 @dataclass(frozen=True)
@@ -470,7 +543,7 @@ def analisar_arquivo(
 def _gravar_ini_com_suporte(
     config: Path, parametros: dict[str, str], destino: Path
 ) -> None:
-    """Copia o perfil e substitui só as chaves de suporte."""
+    """Copia o perfil e substitui apenas as chaves escolhidas na GUI."""
     try:
         linhas = config.read_text(encoding="utf-8", errors="replace").splitlines()
     except OSError as exc:
@@ -568,6 +641,7 @@ def converter_3mf_para_k7(
     quantidade: int = 1,
     suporte_fino: bool = False,
     suporte_fino_mm: float = SUPORTE_FINO_PADRAO_MM,
+    config_impressao: dict[str, float] | None = None,
 ) -> ResultadoConversao:
     """Redimensiona, centraliza e fatia o arquivo para a Easythreed K7."""
     caminho = Path(arquivo_3mf).expanduser()
@@ -611,16 +685,24 @@ def converter_3mf_para_k7(
 
     config_efetiva = config
     ini_suporte: Path | None = None
+    parametros: dict[str, str] = {}
+    nome_tipo: str | None = None
+    espessura_fina: float | None = None
+
     if tipo_suporte is not None or suporte_fino:
         nome_tipo = tipo_suporte or SUPORTE_PADRAO
         modelo = TIPOS_SUPORTE.get(nome_tipo)
         if modelo is None:
             raise ErroConversao(f"Tipo de suporte desconhecido: {nome_tipo}")
-        parametros = dict(modelo)
-        espessura_fina: float | None = None
+        parametros.update(modelo)
         if suporte_fino and parametros.get("support_material") == "1":
             espessura_fina = validar_suporte_fino_mm(suporte_fino_mm, log)
             parametros.update(parametros_suporte_fino(espessura_fina))
+
+    if config_impressao:
+        parametros.update(parametros_config_impressao(config_impressao, log))
+
+    if parametros:
         descritor_ini, nome_ini = tempfile.mkstemp(
             prefix="k7_suporte_", suffix=".ini", dir=str(config.parent)
         )
@@ -632,12 +714,18 @@ def converter_3mf_para_k7(
             ini_suporte.unlink(missing_ok=True)
             raise
         config_efetiva = ini_suporte
-        detalhe = (
-            f" (mais fino: {espessura_fina:g} mm; tronco uniforme, sem parede dupla)"
-            if espessura_fina is not None
-            else ""
-        )
-        log("info", f"Tipo de suporte: {nome_tipo}{detalhe}")
+        if nome_tipo is not None:
+            detalhe = (
+                f" (diâmetro do suporte: {espessura_fina:g} mm; tronco uniforme, sem parede dupla)"
+                if espessura_fina is not None
+                else ""
+            )
+            log("info", f"Tipo de suporte: {nome_tipo}{detalhe}")
+        if config_impressao:
+            resumo = ", ".join(
+                f"{chave}={parametros[chave]}" for chave in LIMITES_IMPRESSAO
+            )
+            log("info", f"Ajustes de impressão no perfil temporário: {resumo}")
 
     descritor, stl_temporario = tempfile.mkstemp(
         prefix="k7_", suffix=".stl", dir=str(destino.parent)

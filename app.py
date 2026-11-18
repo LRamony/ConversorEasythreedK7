@@ -43,6 +43,7 @@ from converter_k7 import (
     ALTURA_MESA_MM,
     CONFIG_PADRAO,
     LARGURA_MESA_MM,
+    LIMITES_IMPRESSAO,
     LIMITE_SEGURANCA_MM,
     PROFUNDIDADE_MESA_MM,
     EXTRUSAO_SUPORTE_MAX_MM,
@@ -56,6 +57,8 @@ from converter_k7 import (
     ResultadoConversao,
     analisar_arquivo,
     converter_3mf_para_k7,
+    limitar_impressao,
+    ler_parametros_impressao,
     localizar_prusa_cli,
 )
 
@@ -82,22 +85,90 @@ MAX_ITENS_FILA = 500
 MAX_LINHAS_LOG_GUI = 500
 MAX_ITENS_POR_TICK = 150
 
-FILTROS_ARQUIVO = {
-    "3MF e STL": [
-        ("Modelos 3MF e STL", "*.3mf *.stl"),
-        ("Arquivos 3MF", "*.3mf"),
-        ("Arquivos STL", "*.stl"),
-        ("Todos os arquivos", "*.*"),
-    ],
-    "Somente 3MF": [
-        ("Arquivos 3MF", "*.3mf"),
-        ("Todos os arquivos", "*.*"),
-    ],
-    "Somente STL": [
-        ("Arquivos STL", "*.stl"),
-        ("Todos os arquivos", "*.*"),
-    ],
-}
+# A caixa de diálogo "Procurar..." já oferece todos os filtros; não há mais
+# seletor na interface.
+FILTROS_ARQUIVO: tuple[tuple[str, str], ...] = (
+    ("Modelos 3MF e STL", "*.3mf *.stl"),
+    ("Arquivos 3MF", "*.3mf"),
+    ("Arquivos STL", "*.stl"),
+    ("Todos os arquivos", "*.*"),
+)
+
+# Ajustes exibidos com nome completo na aba "Ajustes de impressão".
+# (chave, título, unidade, explicação)
+CAMPOS_IMPRESSAO: tuple[tuple[str, str, str, str], ...] = (
+    (
+        "fill_density",
+        "Preenchimento",
+        "%",
+        "Quantidade de plástico no interior da peça. Valores baixos deixam a "
+        "peça mais oca e rápida; valores altos aumentam resistência, material "
+        "e tempo de impressão.",
+    ),
+    (
+        "perimeter_speed",
+        "Velocidade do perímetro",
+        "mm/s",
+        "Velocidade das paredes externas. Muito alta pode causar tremida do bico "
+        "e perder definição nos detalhes.",
+    ),
+    (
+        "infill_speed",
+        "Velocidade do preenchimento",
+        "mm/s",
+        "Velocidade das linhas internas. Pode ser maior que a do perímetro, mas "
+        "em peças pequenas valores altos não dão tempo de resfriar.",
+    ),
+    (
+        "travel_speed",
+        "Velocidade de viagem",
+        "mm/s",
+        "Velocidade do bico quando ele se move sem extrudar. Excesso pode causar "
+        "perda de passo dos motores e deslocar a peça.",
+    ),
+    (
+        "temperature",
+        "Temperatura do bico",
+        "°C",
+        "Temperatura do hotend durante a impressão. PLA costuma funcionar bem "
+        "entre 190 °C e 210 °C; materiais especiais podem pedir mais.",
+    ),
+    (
+        "first_layer_temperature",
+        "Temperatura do bico na 1ª camada",
+        "°C",
+        "Usada somente na primeira camada. Um pouco mais alta que a temperatura "
+        "normal ajuda a aderir à mesa.",
+    ),
+    (
+        "bed_temperature",
+        "Temperatura da mesa",
+        "°C",
+        "Temperatura da mesa aquecida. A K7 comum usa 0 °C; aumente apenas se o "
+        "material ou a sua mesa aquecida pedirem.",
+    ),
+    (
+        "first_layer_bed_temperature",
+        "Temperatura da mesa na 1ª camada",
+        "°C",
+        "Temperatura da mesa somente na primeira camada. Ajuda na aderência; "
+        "mantenha 0 °C se não houver mesa aquecida.",
+    ),
+)
+
+GRUPOS_IMPRESSAO: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("Preenchimento", ("fill_density",)),
+    ("Velocidades", ("perimeter_speed", "infill_speed", "travel_speed")),
+    (
+        "Temperaturas",
+        (
+            "temperature",
+            "first_layer_temperature",
+            "bed_temperature",
+            "first_layer_bed_temperature",
+        ),
+    ),
+)
 
 
 def _fmt(dimensoes: tuple[float, float, float]) -> str:
@@ -122,8 +193,8 @@ class AppK7(ttk.Window):
         super().__init__(
             title="Conversor 3MF / STL - Easythreed K7",
             themename=TEMA_PADRAO,
-            size=(1000, 1010),
-            minsize=(900, 945),
+            size=(1000, 935),
+            minsize=(900, 935),
         )
 
         self.estilo = ttk.Style()
@@ -142,9 +213,11 @@ class AppK7(ttk.Window):
         self._tempo_manual = False
 
         self.var_arquivo = tk.StringVar(value="")
-        self.var_formato = tk.StringVar(value="3MF e STL")
         self.var_tamanho = tk.DoubleVar(value=60.0)
-        self.var_scale = tk.DoubleVar(value=60.0)
+        self.vars_impressao = {
+            chave: tk.IntVar(value=padrao)
+            for chave, (_minimo, _maximo, padrao) in LIMITES_IMPRESSAO.items()
+        }
         self.var_quantidade = tk.IntVar(value=1)
         self.var_suporte_fino = tk.BooleanVar(value=False)
         self.var_suporte_fino_mm = tk.DoubleVar(value=SUPORTE_FINO_PADRAO_MM)
@@ -170,6 +243,10 @@ class AppK7(ttk.Window):
 
         self._construir_interface()
         self._aplicar_config_salva()
+
+        # Ajustes de impressão são persistidos assim que o valor muda.
+        for variavel in self.vars_impressao.values():
+            variavel.trace_add("write", lambda *_: self._salvar_config())
 
         # Qualquer alteração nos valores recalcula automaticamente.
         for variavel in (
@@ -232,12 +309,18 @@ class AppK7(ttk.Window):
             pass
         return {}
 
+    def _valor_impressao(self, chave: str) -> int:
+        """Lê um ajuste mesmo enquanto o usuário está digitando no campo."""
+        try:
+            return int(self.vars_impressao[chave].get())
+        except (ValueError, TypeError, tk.TclError):
+            return LIMITES_IMPRESSAO[chave][2]
+
     def _salvar_config(self) -> None:
         config = self.var_config.get().strip()
         if not config or _eh_temporario(Path(config)):
             config = str(CONFIG_PADRAO)
         dados = {
-            "formato": self.var_formato.get(),
             "cli": self.var_cli.get().strip(),
             "config": config,
             "saida": self.var_saida.get().strip(),
@@ -246,6 +329,10 @@ class AppK7(ttk.Window):
             "suporte": self.var_suporte.get(),
             "suporte_fino": self.var_suporte_fino.get(),
             "suporte_fino_mm": self.var_suporte_fino_mm.get(),
+            **{
+                chave: self._valor_impressao(chave)
+                for chave in LIMITES_IMPRESSAO
+            },
             "margem": self.var_margem.get(),
             "tempo_calculo": self.var_tempo_calculo.get(),
             "gcode_calculo": self.var_gcode_calculo.get().strip(),
@@ -266,15 +353,22 @@ class AppK7(ttk.Window):
             pass
 
     def _aplicar_config_salva(self) -> None:
-        formato = self.config_salva.get("formato", "3MF e STL")
-        if formato in FILTROS_ARQUIVO:
-            self.var_formato.set(formato)
         self.var_cli.set(self.config_salva.get("cli", self.var_cli.get()))
         config_salva = str(self.config_salva.get("config", ""))
         self.var_config.set(
             config_salva if _caminho_valido(config_salva) else str(CONFIG_PADRAO)
         )
         self.var_saida.set(self.config_salva.get("saida", ""))
+
+        # Os campos rápidos começam com os valores do perfil escolhido; o que
+        # estiver salvo nas preferências tem prioridade. Nada é gravado no .ini.
+        valores_perfil = ler_parametros_impressao(self.var_config.get())
+        for chave, variavel in self.vars_impressao.items():
+            try:
+                valor = float(self.config_salva[chave])
+            except (KeyError, TypeError, ValueError, tk.TclError):
+                valor = valores_perfil[chave]
+            variavel.set(limitar_impressao(chave, valor))
 
         suporte = str(self.config_salva.get("suporte", ""))
         self.var_suporte.set(suporte if suporte in TIPOS_SUPORTE else SUPORTE_PADRAO)
@@ -302,7 +396,6 @@ class AppK7(ttk.Window):
         try:
             tamanho = min(max(float(self.var_tamanho.get()), 1.0), LIMITE_SEGURANCA_MM)
             self.var_tamanho.set(tamanho)
-            self.var_scale.set(tamanho)
         except (TypeError, ValueError, tk.TclError):
             pass
 
@@ -342,13 +435,18 @@ class AppK7(ttk.Window):
         self.abas = abas
 
         aba_conversao = ttk.Frame(abas, padding=12)
+        aba_impressao = ttk.Frame(abas, padding=12)
         aba_config = ttk.Frame(abas, padding=12)
         aba_calc = ttk.Frame(abas, padding=12)
         abas.add(aba_conversao, text="  Converter  ")
+        abas.add(aba_impressao, text="  Ajustes de impressão  ")
         abas.add(aba_config, text="  Configurações  ")
         abas.add(aba_calc, text="  Calc  ")
+        self.aba_impressao = aba_impressao
+        self.aba_config = aba_config
 
         self._construir_aba_conversao(aba_conversao)
+        self._construir_aba_impressao(aba_impressao)
         self._construir_aba_config(aba_config)
         self._construir_aba_calc(aba_calc)
         self._construir_log(principal)
@@ -411,17 +509,6 @@ class AppK7(ttk.Window):
             bootstyle="primary-outline",
             command=self._escolher_arquivo,
         ).grid(row=0, column=1, padx=(8, 0))
-        ttk.Label(
-            cartao_arquivo, text="Filtrar arquivos:", bootstyle="secondary"
-        ).grid(row=1, column=0, sticky="w", pady=(6, 0))
-        ttk.Combobox(
-            cartao_arquivo,
-            textvariable=self.var_formato,
-            values=list(FILTROS_ARQUIVO),
-            state="readonly",
-            width=14,
-        ).grid(row=1, column=1, sticky="e", pady=(6, 0))
-
         cartao_tamanho = self._cartao(aba, "2. Tamanho máximo da peça")
         cartao_tamanho.columnconfigure(2, weight=1)
         ttk.Label(cartao_tamanho, text="Medida máxima (mm):").grid(row=0, column=0, sticky="w")
@@ -437,15 +524,6 @@ class AppK7(ttk.Window):
         spin.bind("<KeyRelease>", self._ao_mudar_tamanho)
         spin.bind("<FocusOut>", self._ao_mudar_tamanho)
 
-        escala = ttk.Scale(
-            cartao_tamanho,
-            from_=10.0,
-            to=LIMITE_SEGURANCA_MM,
-            orient="horizontal",
-            variable=self.var_scale,
-            command=self._ao_mover_escala,
-            bootstyle="primary",
-        )
         ttk.Label(
             cartao_tamanho, text="Quantidade de peças:", bootstyle="primary"
         ).grid(row=0, column=2, sticky="e", padx=(24, 0))
@@ -458,16 +536,16 @@ class AppK7(ttk.Window):
             width=8,
         ).grid(row=0, column=3, sticky="w", padx=(8, 0))
 
-        escala.grid(row=1, column=0, columnspan=4, sticky="ew", pady=(10, 2))
         ttk.Label(
             cartao_tamanho,
             text=f"Trava de segurança: qualquer valor acima de {LIMITE_SEGURANCA_MM:g} mm "
             "é limitado automaticamente antes de fatiar.\n"
             "Ao aumentar a quantidade, a escala é reduzida para que todas as peças "
-            "caibam. O último tamanho é lembrado na próxima execução.",
+            "caibam. Preenchimento, velocidades e temperaturas ficam na aba "
+            "“Ajustes de impressão”.",
             bootstyle="warning",
             justify="left",
-        ).grid(row=2, column=0, columnspan=4, sticky="w", pady=(4, 0))
+        ).grid(row=1, column=0, columnspan=4, sticky="w", pady=(8, 0))
 
         cartao_suporte = self._cartao(aba, "3. Tipo de suporte")
         cartao_suporte.columnconfigure(1, weight=1)
@@ -481,7 +559,7 @@ class AppK7(ttk.Window):
         ).grid(row=0, column=1, sticky="w", padx=(8, 0))
         ttk.Checkbutton(
             cartao_suporte,
-            text="Suportes mais finos",
+            text="Ajustar diâmetro do suporte",
             variable=self.var_suporte_fino,
             bootstyle="success",
         ).grid(row=0, column=2, sticky="w", padx=(16, 0))
@@ -610,6 +688,81 @@ class AppK7(ttk.Window):
             bootstyle="secondary",
             justify="left",
         ).pack(anchor="w")
+
+    def _construir_aba_impressao(self, aba: ttk.Frame) -> None:
+        """Mostra preenchimento, velocidades e temperaturas com nomes completos."""
+        conteudo = ttk.ScrolledFrame(aba, bootstyle="round")
+        conteudo.pack(fill="both", expand=True)
+        pai = conteudo
+
+        introducao = ttk.Frame(pai)
+        introducao.pack(fill="x", pady=(0, 12))
+        introducao.columnconfigure(0, weight=1)
+        ttk.Label(
+            introducao,
+            text="Ajustes usados no fatiamento. Eles não alteram seu perfil "
+            "k7_config.ini: são aplicados em um arquivo temporário e apagados "
+            "ao final da conversão.",
+            bootstyle="secondary",
+            wraplength=780,
+            justify="left",
+        ).grid(row=0, column=0, sticky="w")
+        self.btn_reset_impressao = ttk.Button(
+            introducao,
+            text="Reset",
+            bootstyle="secondary-outline",
+            command=self._reset_impressao,
+        )
+        self.btn_reset_impressao.grid(row=0, column=1, sticky="e", padx=(12, 0))
+
+        detalhes = {chave: (titulo, unidade, texto) for chave, titulo, unidade, texto in CAMPOS_IMPRESSAO}
+        for titulo_grupo, chaves in GRUPOS_IMPRESSAO:
+            cartao = self._cartao(pai, titulo_grupo)
+            for posicao, chave in enumerate(chaves):
+                minimo, maximo, padrao = LIMITES_IMPRESSAO[chave]
+                titulo, unidade, explicacao = detalhes[chave]
+                linha = ttk.Frame(cartao)
+                linha.pack(fill="x", pady=(0, 10 if posicao < len(chaves) - 1 else 0))
+                linha.columnconfigure(2, weight=1)
+
+                ttk.Label(
+                    linha,
+                    text=titulo,
+                    font=("Segoe UI", 10, "bold"),
+                ).grid(row=0, column=0, sticky="w")
+                ttk.Label(
+                    linha,
+                    text=f"({unidade})",
+                    bootstyle="secondary",
+                ).grid(row=0, column=1, sticky="w", padx=(6, 0))
+                campo = ttk.Spinbox(
+                    linha,
+                    from_=minimo,
+                    to=maximo,
+                    increment=1,
+                    textvariable=self.vars_impressao[chave],
+                    width=8,
+                )
+                campo.grid(row=0, column=2, sticky="e")
+                campo.bind(
+                    "<FocusOut>",
+                    lambda _evento, nome=chave: self._ao_sair_campo_impressao(nome),
+                )
+
+                ttk.Label(
+                    linha,
+                    text=f"Permitido: {minimo} a {maximo} {unidade}. "
+                    f"Padrão do perfil: {padrao} {unidade}.",
+                    bootstyle="warning",
+                    justify="left",
+                ).grid(row=1, column=0, columnspan=3, sticky="w", pady=(4, 0))
+                ttk.Label(
+                    linha,
+                    text=explicacao,
+                    bootstyle="secondary",
+                    wraplength=840,
+                    justify="left",
+                ).grid(row=2, column=0, columnspan=3, sticky="w", pady=(2, 0))
 
     def _construir_aba_calc(self, aba: ttk.Frame) -> None:
         # O resultado pode ficar longo; um frame com rolagem evita esconder
@@ -777,21 +930,37 @@ class AppK7(ttk.Window):
     # ------------------------------------------------------------------
     # Eventos da interface
     # ------------------------------------------------------------------
-    def _ao_mover_escala(self, valor: str) -> None:
-        try:
-            self.var_tamanho.set(round(float(valor), 1))
-        except ValueError:
-            return
-        self._agendar_analise()
-
     def _ao_mudar_tamanho(self, _evento=None) -> None:
         try:
             valor = float(self.var_tamanho.get())
         except (ValueError, tk.TclError):
             return
         valor = min(max(valor, 1.0), LIMITE_SEGURANCA_MM)
-        self.var_scale.set(valor)
+        self.var_tamanho.set(valor)
         self._agendar_analise()
+
+    def _ao_sair_campo_impressao(self, chave: str) -> None:
+        """Devolve o campo ao intervalo seguro quando ele perde o foco."""
+        variavel = self.vars_impressao[chave]
+        try:
+            valor = float(variavel.get())
+        except (ValueError, TypeError, tk.TclError):
+            valor = LIMITES_IMPRESSAO[chave][2]
+        variavel.set(limitar_impressao(chave, valor))
+
+    def _reset_impressao(self) -> None:
+        """Restaura preenchimento, velocidades e temperaturas ao padrão."""
+        for chave, (_minimo, _maximo, padrao) in LIMITES_IMPRESSAO.items():
+            self.vars_impressao[chave].set(padrao)
+        self._salvar_config()
+        self.var_status.set("Ajustes de impressão restaurados ao padrão.")
+
+    def _config_impressao(self) -> dict[str, int]:
+        """Valida todos os ajustes de impressão antes de enviá-los ao fatiador."""
+        return {
+            chave: limitar_impressao(chave, variavel.get())
+            for chave, variavel in self.vars_impressao.items()
+        }
 
     def _ao_mudar_quantidade(self, *_eventos) -> None:
         """Recalcula a prévia quando a quantidade de peças muda."""
@@ -811,8 +980,8 @@ class AppK7(ttk.Window):
         self.var_suporte_fino_mm.set(SUPORTE_FINO_PADRAO_MM)
         self._escrever_log(
             "success",
-            "Suporte fino restaurado para o padrão "
-            f"({SUPORTE_FINO_PADRAO_MM:g} mm de diâmetro, desligado).",
+            "Ajuste de diâmetro do suporte restaurado ao padrão "
+            f"(desligado, {SUPORTE_FINO_PADRAO_MM:g} mm).",
         )
 
     def _abrir_url(self, url: str) -> None:
@@ -833,10 +1002,10 @@ class AppK7(ttk.Window):
             self._escrever_log("error", f"Não foi possível copiar o e-mail: {exc}")
 
     def _escolher_arquivo(self) -> None:
-        formato = self.var_formato.get()
-        filtros = FILTROS_ARQUIVO.get(formato, FILTROS_ARQUIVO["3MF e STL"])
         arquivo = filedialog.askopenfilename(
-            parent=self, title="Selecione o arquivo do modelo", filetypes=filtros
+            parent=self,
+            title="Selecione o arquivo do modelo",
+            filetypes=list(FILTROS_ARQUIVO),
         )
         if arquivo:
             self.var_arquivo.set(arquivo)
@@ -1071,6 +1240,8 @@ class AppK7(ttk.Window):
         if self._cancelar_event is not None:
             self._cancelar_event.set()
         self._dialogo_pendente = None
+        for chave in LIMITES_IMPRESSAO:
+            self._ao_sair_campo_impressao(chave)
         self._salvar_config()
         self.destroy()
 
@@ -1094,7 +1265,7 @@ class AppK7(ttk.Window):
 
         parametros = (arquivo, self._medida_atual(), self._quantidade_atual())
 
-        # Uma única thread de prévia por vez: arrastar o slider não pode criar
+        # Uma única thread de prévia por vez: mudar o tamanho não pode criar
         # dezenas de leituras simultâneas da mesma malha.
         if self._analise_ocupada:
             self._analise_pendente = parametros
@@ -1193,7 +1364,7 @@ class AppK7(ttk.Window):
                 "PrusaSlicer não encontrado",
                 parent=self,
             )
-            self.abas.select(1)
+            self.abas.select(self.aba_config)
             return
         if not config or not Path(config).is_file():
             aviso = garantir_config_k7(lambda _mensagem: None)
@@ -1206,7 +1377,7 @@ class AppK7(ttk.Window):
                 "Perfil não encontrado",
                 parent=self,
             )
-            self.abas.select(1)
+            self.abas.select(self.aba_config)
             return
 
         pasta = self.var_saida.get().strip().strip('"')
@@ -1214,8 +1385,10 @@ class AppK7(ttk.Window):
         if pasta:
             arquivo_gcode = Path(pasta) / f"{Path(arquivo).stem}_K7.gcode"
 
-        # Garante que o último tamanho/quantidade escolhidos sobrevivam até mesmo
-        # se o programa for fechado de forma inesperada durante a conversão.
+        # Garante que o último tamanho/quantidade/ajustes escolhidos sobrevivam
+        # até mesmo se o programa for fechado durante a conversão.
+        for chave in LIMITES_IMPRESSAO:
+            self._ao_sair_campo_impressao(chave)
         self._salvar_config()
 
         self.ocupado = True
@@ -1239,6 +1412,7 @@ class AppK7(ttk.Window):
                 self._quantidade_atual(),
                 self.var_suporte_fino.get(),
                 self._diametro_suporte_fino(),
+                self._config_impressao(),
             ),
             daemon=True,
         ).start()
@@ -1262,6 +1436,7 @@ class AppK7(ttk.Window):
         quantidade: int,
         suporte_fino: bool,
         suporte_fino_mm: float,
+        config_impressao: dict[str, int],
     ) -> None:
         try:
             resultado = converter_3mf_para_k7(
@@ -1276,6 +1451,7 @@ class AppK7(ttk.Window):
                 quantidade=quantidade,
                 suporte_fino=suporte_fino,
                 suporte_fino_mm=suporte_fino_mm,
+                config_impressao=config_impressao,
             )
         except Exception as exc:
             self._enfileirar(("erro", str(exc)))
@@ -1304,7 +1480,7 @@ class AppK7(ttk.Window):
 
                 elif tipo in ("analise", "analise_erro"):
                     if item[1] != self._analise_geracao:
-                        continue  # resultado antigo (slider mudou)
+                        continue  # resultado antigo (tamanho mudou)
                     self._analise_ocupada = False
                     if tipo == "analise":
                         self._mostrar_analise(item[2])

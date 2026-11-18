@@ -23,7 +23,7 @@ Interface gráfica feita com **ttkbootstrap** sobre o tkinter. Ela:
 | `k7_config.ini` | Perfil da K7 (mesa 100³, bico 0,4, 195/200 °C, mesa 0 °C, suportes automáticos) |
 | `test_pipeline.py` | Testes do pipeline e smoke test da interface |
 | `requirements.txt` | Dependências |
-| `k7_gui_settings.json` | Preferências salvas automaticamente (caminhos, filtro, último tamanho, quantidade e suporte fino) |
+| `k7_gui_settings.json` | Preferências salvas automaticamente (caminhos, último tamanho, quantidade, ajustes de impressão e diâmetro do suporte) |
 
 > A interface usa **apenas o tema `bootstrap-dark`** (padrão fixo, sem seletor de temas).
 
@@ -44,28 +44,45 @@ python -m venv .venv
 
 Na aba **Converter**:
 
-1. Em **Arquivo de entrada**, escolha o filtro (`3MF e STL`, `Somente 3MF` ou `Somente STL`) e clique em **Procurar...**;
-2. Defina a **medida máxima** (campo numérico ou slider) e a **quantidade de peças**. A prévia mostra dimensões originais, fator de escala, dimensões do conjunto e o tamanho de cada peça;
-3. Em **Tipo de suporte**, escolha entre **sem suporte**, as variantes **normais** (grade, linhas, quadrados, colmeia, snug) ou as variantes **árvore/orgânicas** (padrão, reforçada, econômica). À direita do seletor, marque **Suportes mais finos** e informe o **diâmetro da árvore em mm** (padrão `0,9`);
+1. Em **Arquivo de entrada**, clique em **Procurar...**. A própria janela de arquivos oferece os filtros de `.3mf` e `.stl`;
+2. Defina a **medida máxima** (apenas campo numérico) e a **quantidade de peças**. A prévia mostra dimensões originais, fator de escala, dimensões do conjunto e o tamanho de cada peça;
+3. Em **Tipo de suporte**, escolha entre **sem suporte**, as variantes **normais** (grade, linhas, quadrados, colmeia, snug) ou as variantes **árvore/orgânicas** (padrão, reforçada, econômica). À direita do seletor, marque **Ajustar diâmetro do suporte** e informe o **diâmetro em mm** (padrão `0,9`);
 4. Opcionalmente escolha a **pasta de saída** (em branco = mesma pasta do modelo). O nome gerado é `<nome>_K7.gcode`;
 5. Clique em **Converter para G-code**.
 
-O **último tamanho máximo escolhido**, a quantidade de peças e o **diâmetro do suporte fino** são salvos quando você converte ou fecha o programa, e voltam como padrão na próxima execução. O botão **Reset** ao lado do campo restaura o padrão de fábrica (opção desligada e `0,9 mm` de diâmetro).
+O **último tamanho máximo escolhido**, a quantidade de peças, os **ajustes de impressão** e o **diâmetro do suporte** voltam como padrão na próxima execução. Os ajustes de impressão são salvos imediatamente quando você altera um campo; os demais são salvos ao converter ou fechar. O botão **Reset** da aba **Ajustes de impressão** restaura preenchimento, velocidades e temperaturas ao padrão. O **Reset** ao lado do campo de suporte restaura apenas o suporte (opção desligada e `0,9 mm` de diâmetro).
+
+### Ajustes de impressão
+
+A barra deslizante e as siglas foram removidas. As opções ficam diretamente na aba **Ajustes de impressão**, logo após **Converter**. Lá cada opção aparece com nome completo, unidade, limite e uma explicação do efeito na impressão.
+
+| Nome exibido | Chave do PrusaSlicer | Limite | O que controla |
+| --- | --- | --- | --- |
+| Preenchimento | `fill_density` | `5` a `100 %` | Quantidade de plástico no interior da peça. Valores baixos deixam a peça mais oca e rápida; valores altos aumentam resistência, material e tempo. |
+| Velocidade do perímetro | `perimeter_speed` | `10` a `60 mm/s` | Velocidade das paredes externas. Muito alta pode causar tremida e perder definição nos detalhes. |
+| Velocidade do preenchimento | `infill_speed` | `10` a `80 mm/s` | Velocidade das linhas internas. Pode ser maior que a do perímetro, mas em peças pequenas pode não dar tempo de resfriar. |
+| Velocidade de viagem | `travel_speed` | `20` a `120 mm/s` | Movimento do bico sem extrudar. Excesso pode causar perda de passo dos motores e deslocar a peça. |
+| Temperatura do bico | `temperature` | `180` a `230 °C` | Temperatura do hotend. PLA costuma funcionar entre `190 °C` e `210 °C`. |
+| Temperatura do bico na 1ª camada | `first_layer_temperature` | `180` a `230 °C` | Usada somente na primeira camada. Um pouco mais alta ajuda na aderência à mesa. |
+| Temperatura da mesa | `bed_temperature` | `0` a `80 °C` | A K7 comum usa `0 °C`; aumente apenas se o material ou a mesa aquecida pedirem. |
+| Temperatura da mesa na 1ª camada | `first_layer_bed_temperature` | `0` a `80 °C` | Ajuda na aderência da primeira camada. Mantenha `0 °C` sem mesa aquecida. |
+
+Os campos começam com os valores do `k7_config.ini` escolhido e o que você alterar tem prioridade na próxima execução. Cada alteração é salva na hora, e o botão **Reset** à direita do texto “ao final da conversão” restaura todos os campos aos valores padrão. Qualquer valor digitado abaixo do mínimo ou acima do máximo é automaticamente limitado ao intervalo. Assim como o suporte, nada é gravado no seu perfil: os valores são aplicados em um `.ini` temporário que é apagado ao final da conversão.
 
 ### Tipo de suporte
 
-O seletor da aba **Converter** escolhe o estilo de suporte. O programa **não altera** o seu `k7_config.ini`: ele copia o perfil para um arquivo temporário, aplica as chaves corretas do PrusaSlicer (`support_material_style`, `support_tree_angle`, `support_tree_angle_slow`, etc.) e apaga esse arquivo ao final da conversão.
+O seletor da aba **Converter** escolhe o estilo de suporte. O programa **não altera** o seu `k7_config.ini`: ele copia o perfil para um arquivo temporário, aplica as chaves corretas do PrusaSlicer (`support_material_style`, `support_tree_angle`, `support_tree_angle_slow`, `fill_density`, `perimeter_speed`, `temperature`, etc.) e apaga esse arquivo ao final da conversão.
 
 - **Normal**: grade, linhas, quadrados, colmeia ou ajustado (snug);
 - **Árvore (orgânico)**: padrão (`40°`/`25°`), reforçado (`30°`/`20°`, mais vertical) ou econômico (`55°`/`35°` e densidade de ponta `5%`).
 
 > Correção: a versão anterior usava `support_material_angling`, que não é uma chave reconhecida pelo PrusaSlicer e era ignorada. Agora o ângulo é aplicado de verdade com `support_tree_angle` e `support_tree_angle_slow`.
 
-### Suportes mais finos
+### Ajustar diâmetro do suporte
 
-Ao marcar **Suportes mais finos**, o valor informado é o **diâmetro do ramo/árvore** (`0,6` a `3,0 mm`, padrão `0,9 mm`). A largura de extrusão é derivada automaticamente desse diâmetro (≈ `diâmetro / 3`, limitada a `0,22–0,50 mm` para respeitar o bico de `0,4 mm` e as camadas de `0,20 mm`).
+Ao marcar **Ajustar diâmetro do suporte**, o valor informado é o **diâmetro do ramo/árvore** (`0,6` a `3,0 mm`, padrão `0,9 mm`). A largura de extrusão é derivada automaticamente desse diâmetro (≈ `diâmetro / 3`, limitada a `0,22–0,50 mm` para respeitar o bico de `0,4 mm` e as camadas de `0,20 mm`).
 
-Por exemplo, com `1,5 mm`: extrusão `0,50 mm`, ramo `1,5 mm`, ponta `0,75 mm`.
+Por exemplo, com `1,5 mm`: extrusão `0,50 mm`, ramo `1,5 mm`, ponta `0,75 mm`. Com `2,5 mm`: ramo `2,5 mm`, ponta `1,25 mm` e extrusão `0,50 mm` — ou seja, aumentar o valor engrossa a árvore. A extrusão para de crescer em `0,50 mm`, pois é o limite seguro para o bico de `0,4 mm` e a camada de `0,20 mm`.
 
 O que muda no `.ini` temporário:
 

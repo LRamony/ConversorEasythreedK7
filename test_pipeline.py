@@ -276,6 +276,10 @@ def testar_tipo_suporte(diretorio: Path) -> None:
     assert texto_fino.count("support_material_extrusion_width = ") == 1
     assert conv.validar_suporte_fino_mm(9) == conv.SUPORTE_FINO_MAX_MM
     assert conv.validar_suporte_fino_mm(-1) == conv.SUPORTE_FINO_MIN_MM
+    grosso = conv.parametros_suporte_fino(2.5)
+    assert grosso["support_tree_branch_diameter"] == "2.5"
+    assert float(grosso["support_tree_tip_diameter"]) > 0.53
+    assert grosso["support_material_extrusion_width"] == "0.5"
     extrusao_min = float(
         conv.parametros_suporte_fino(conv.SUPORTE_FINO_MIN_MM)[
             "support_material_extrusion_width"
@@ -324,7 +328,74 @@ def testar_tipo_suporte(diretorio: Path) -> None:
     assert vistos and "support_material = 0" in vistos[-1]
     assert not any("support_material_extrusion_width" in trecho for trecho in vistos)
     assert not list(diretorio.glob("k7_suporte_*.ini")), "ini temporário não removido"
-    print("  [ok] conversao aplica suporte fino e ignora a opcao sem suporte")
+    print("  [ok] conversao ajusta o diametro e ignora a opcao sem suporte")
+
+
+def testar_ajustes_impressao(diretorio: Path) -> None:
+    """Preenchimento, velocidades e temperaturas têm limites e vão no .ini."""
+    perfil = diretorio / "perfil_ajustes.ini"
+    perfil.write_text(
+        "fill_density = 12%\n"
+        "perimeter_speed = 30\n"
+        "temperature = 195\n"
+        "bed_temperature = 0\n",
+        encoding="utf-8",
+    )
+    lidos = conv.ler_parametros_impressao(perfil)
+    assert lidos["fill_density"] == 12
+    assert lidos["infill_speed"] == 35  # padrão quando a chave não existe
+    assert conv.limitar_impressao("fill_density", 900) == 100
+    assert conv.limitar_impressao("temperature", -10) == 180
+    assert conv.limitar_impressao("travel_speed", 33.6) == 34
+
+    valores = {
+        "fill_density": 40,
+        "perimeter_speed": 999,
+        "infill_speed": 45,
+        "travel_speed": 90,
+        "temperature": 210,
+        "first_layer_temperature": 215,
+        "bed_temperature": 0,
+        "first_layer_bed_temperature": 0,
+    }
+    parametros = conv.parametros_config_impressao(valores)
+    assert parametros["fill_density"] == "40%"
+    assert parametros["perimeter_speed"] == "60"  # limite máximo
+    assert parametros["travel_speed"] == "90"
+    assert parametros["temperature"] == "210"
+
+    destino_ini = diretorio / "temporario_ajustes.ini"
+    conv._gravar_ini_com_suporte(perfil, parametros, destino_ini)
+    texto = destino_ini.read_text(encoding="utf-8")
+    assert "fill_density = 40%" in texto
+    assert "perimeter_speed = 60" in texto
+    assert "temperature = 210" in texto
+    assert texto.count("fill_density = ") == 1
+
+    modelo = diretorio / "ajustes.3mf"
+    criar_3mf(modelo)
+    cli_falso = diretorio / "cli_ajustes.exe"
+    cli_falso.write_bytes(b"falso")
+    vistos: list[str] = []
+
+    def falso_slicer(comando: list[str], *_args, **_kwargs):
+        vistos.append(Path(comando[3]).read_text(encoding="utf-8"))
+        Path(comando[comando.index("--output") + 1]).write_text("; ok\n", encoding="utf-8")
+        return 0, []
+
+    with patch.object(conv, "_executar_slicer", side_effect=falso_slicer):
+        conv.converter_3mf_para_k7(
+            modelo,
+            50,
+            prusa_cli=cli_falso,
+            config_ini=perfil,
+            tipo_suporte="Sem suporte",
+            config_impressao=valores,
+        )
+    assert any("fill_density = 40%" in trecho for trecho in vistos)
+    assert any("support_material = 0" in trecho for trecho in vistos)
+    assert not list(diretorio.glob("k7_suporte_*.ini")), "ini temporário não removido"
+    print("  [ok] ajustes rapidos limitados e aplicados no perfil temporario")
 
 
 def testar_quantidade(diretorio: Path) -> None:
@@ -510,6 +581,8 @@ def testar_perfil_ini(diretorio: Path) -> None:
 
 
 def testar_gui() -> None:
+    import tkinter.ttk as ttk_widgets
+
     import app as app_modulo
 
     with tempfile.TemporaryDirectory(prefix="k7_prefs_gui_") as pasta_prefs:
@@ -524,13 +597,72 @@ def testar_gui() -> None:
                 janela.abas.tab(indice, "text").strip()
                 for indice in range(janela.abas.index("end"))
             ]
-            assert any("Calc" in texto for texto in abas), abas
+            assert abas == [
+                "Converter",
+                "Ajustes de impressão",
+                "Configurações",
+                "Calc",
+            ], abas
+            assert not hasattr(janela, "btn_config_impressao")
             assert janela.var_suporte.get() in conv.TIPOS_SUPORTE
             assert janela.var_margem.get() > 0
             assert 1 <= janela.var_quantidade.get() <= conv.QUANTIDADE_MAXIMA
             assert janela.spin_suporte_fino.winfo_manager() == "grid"
             assert janela.var_suporte_fino_mm.get() == conv.SUPORTE_FINO_PADRAO_MM
             assert janela.lnk_documentacao.cget("text") == "Documentação"
+            assert not hasattr(janela, "var_formato")
+            assert app_modulo.FILTROS_ARQUIVO[0] == (
+                "Modelos 3MF e STL",
+                "*.3mf *.stl",
+            )
+            assert janela.minsize() == (900, 935)
+            assert janela.winfo_width() == 1000
+            assert janela.winfo_height() == 935
+
+            def descendentes(widget):
+                for filho in widget.winfo_children():
+                    yield filho
+                    yield from descendentes(filho)
+
+            widgets = list(descendentes(janela))
+            assert not any(isinstance(w, ttk_widgets.Scale) for w in widgets)
+            assert set(janela.vars_impressao) == set(conv.LIMITES_IMPRESSAO)
+            textos_visiveis: set[str] = set()
+            for widget in widgets:
+                try:
+                    textos_visiveis.add(str(widget.cget("text")))
+                except Exception:
+                    pass
+            assert "Ajustar diâmetro do suporte" in textos_visiveis
+            assert "Suportes mais finos" not in textos_visiveis
+            titulos = {
+                titulo for _chave, titulo, _unidade, _texto in app_modulo.CAMPOS_IMPRESSAO
+            }
+            assert titulos <= textos_visiveis
+            assert any("Permitido: 5 a 100 %" in texto for texto in textos_visiveis)
+            for sigla in ("P%", "Vp", "Vi", "Vv", "T1", "Tb", "T1b"):
+                assert sigla not in textos_visiveis
+            assert "Configuração de impressão" not in textos_visiveis
+            assert "Filtrar arquivos:" not in textos_visiveis
+            assert janela.btn_reset_impressao.cget("text") == "Reset"
+            assert janela.btn_reset_impressao.winfo_manager() == "grid"
+
+            # Alterar um ajuste salva na hora; Reset volta ao padrão e salva.
+            janela.vars_impressao["fill_density"].set(55)
+            janela.update()
+            dados = json.loads(arquivo_prefs.read_text(encoding="utf-8"))
+            assert dados["fill_density"] == 55
+
+            janela.btn_reset_impressao.invoke()
+            janela.update()
+            for chave, (_minimo, _maximo, padrao) in conv.LIMITES_IMPRESSAO.items():
+                assert janela.vars_impressao[chave].get() == padrao
+            dados = json.loads(arquivo_prefs.read_text(encoding="utf-8"))
+            assert all(
+                dados[chave] == padrao
+                for chave, (_minimo, _maximo, padrao) in conv.LIMITES_IMPRESSAO.items()
+            )
+
             # Sem resultado, o botão de copiar não está gerenciado pelo grid.
             assert janela.btn_copiar_orcamento.winfo_manager() == ""
 
@@ -613,20 +745,29 @@ def testar_gui() -> None:
             assert janela.clipboard_get() == app_modulo.EMAIL_PAYPAL
             dialogo.destroy()
 
-            # Tamanho, quantidade e diâmetro do suporte voltam como padrão na
-            # próxima execução porque são gravados ao fechar (e ao converter).
+            # Tamanho, quantidade, suporte e ajustes rápidos voltam como padrão
+            # na próxima execução porque são gravados ao fechar (e converter).
             janela.var_tamanho.set(72.5)
             janela.var_quantidade.set(3)
             janela.var_suporte_fino.set(True)
             janela.var_suporte_fino_mm.set(1.5)
+            janela.vars_impressao["fill_density"].set(40)
+            janela.vars_impressao["perimeter_speed"].set(999)
+            janela._ao_sair_campo_impressao("perimeter_speed")
+            assert janela.vars_impressao["perimeter_speed"].get() == 60
+            janela.vars_impressao["temperature"].set(210)
             janela._salvar_config()
             dados = json.loads(arquivo_prefs.read_text(encoding="utf-8"))
             assert dados["tamanho"] == 72.5
             assert dados["quantidade"] == 3
             assert dados["suporte_fino"] is True
             assert dados["suporte_fino_mm"] == 1.5
+            assert dados["fill_density"] == 40
+            assert dados["perimeter_speed"] == 60
+            assert dados["temperature"] == 210
             assert janela._quantidade_atual() == 3
             assert janela._diametro_suporte_fino() == 1.5
+            assert janela._config_impressao()["fill_density"] == 40
             janela.update()
             janela.destroy()
 
@@ -640,6 +781,9 @@ def testar_gui() -> None:
             assert janela2.var_quantidade.get() == 3
             assert janela2.var_suporte_fino.get() is True
             assert janela2.var_suporte_fino_mm.get() == 1.5
+            assert janela2.vars_impressao["fill_density"].get() == 40
+            assert janela2.vars_impressao["perimeter_speed"].get() == 60
+            assert janela2.vars_impressao["temperature"].get() == 210
 
             janela2._reset_suporte_fino()
             assert janela2.var_suporte_fino.get() is False
@@ -661,8 +805,8 @@ def testar_gui() -> None:
             assert janela3.var_suporte_fino_mm.get() == 0.9
             janela3.destroy()
     print("  [ok] interface ttkbootstrap constroi e fecha sem erros")
-    print("  [ok] abas Configuracoes/Calc, suporte fino, Reset e documentacao presentes")
-    print("  [ok] ultimo tamanho/quantidade/diametro salvos como padrao")
+    print("  [ok] abas Configuracoes/Calc/Ajustes, diametro do suporte, Reset e documentacao presentes")
+    print("  [ok] slider removido; ajustes rapidos limitados e salvos como padrao")
 
 
 def main() -> None:
@@ -674,6 +818,7 @@ def main() -> None:
         testar_conversao_stl(diretorio)
         testar_multiplas_partes_e_erros(diretorio)
         testar_tipo_suporte(diretorio)
+        testar_ajustes_impressao(diretorio)
         testar_quantidade(diretorio)
         testar_protecoes_travamento(diretorio)
         testar_preflight()
