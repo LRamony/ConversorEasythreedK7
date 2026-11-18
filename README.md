@@ -175,7 +175,7 @@ Os testes substituem a execução do fatiador (`_executar_slicer`) por uma funç
 ## Links e créditos
 
 - **Documentação**: link no canto inferior direito da janela → [README no GitHub](https://github.com/LRamony/ConversorEasythreedK7/blob/main/README.md);
-- **Desenvolvedor**: o aviso “Conversão concluída” exibe `Desenvolvedor: Lucas Ramony`, com o nome linkado ao [LinkedIn](https://www.linkedin.com/in/ramony-sabino-5a896536/).
+- **Desenvolvedor**: o aviso “Conversão concluída” exibe `Desenvolvedor: Lucas Ramony`, com o nome linkado ao [LinkedIn](https://www.linkedin.com/in/ramony-sabino-5a896536/);
 
 ## Gerando o `.exe`
 

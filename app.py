@@ -75,6 +75,8 @@ URL_DOCUMENTACAO = (
 )
 URL_LINKEDIN = "https://www.linkedin.com/in/ramony-sabino-5a896536/"
 NOME_DESENVOLVEDOR = "Lucas Ramony"
+URL_LIVEPIX = "https://livepix.gg/lrlive0n/blacktavernx"
+EMAIL_PAYPAL = "lucas.ramony@gmail.com"
 
 MAX_ITENS_FILA = 500
 MAX_LINHAS_LOG_GUI = 500
@@ -822,6 +824,14 @@ class AppK7(ttk.Window):
     def _abrir_documentacao(self) -> None:
         self._abrir_url(URL_DOCUMENTACAO)
 
+    def _copiar_email_paypal(self) -> None:
+        try:
+            self.clipboard_clear()
+            self.clipboard_append(EMAIL_PAYPAL)
+            self._escrever_log("success", f"E-mail do PayPal copiado: {EMAIL_PAYPAL}")
+        except tk.TclError as exc:
+            self._escrever_log("error", f"Não foi possível copiar o e-mail: {exc}")
+
     def _escolher_arquivo(self) -> None:
         formato = self.var_formato.get()
         filtros = FILTROS_ARQUIVO.get(formato, FILTROS_ARQUIVO["3MF e STL"])
@@ -1360,7 +1370,7 @@ class AppK7(ttk.Window):
             pass
 
     def _mostrar_dialogo_sucesso(self, caminho_gcode: str, titulo: str) -> ttk.Toplevel:
-        """Diálogo de conclusão com o crédito ao desenvolvedor linkado."""
+        """Diálogo de conclusão com crédito linkado e opções de doação."""
         dialogo = ttk.Toplevel(self)
         dialogo.title(titulo)
         dialogo.resizable(False, False)
@@ -1387,9 +1397,32 @@ class AppK7(ttk.Window):
         )
         link.grid(row=1, column=1, sticky="w", pady=(14, 0))
         link.bind("<Button-1>", lambda _evento: self._abrir_url(URL_LINKEDIN))
+
+        ttk.Label(corpo, text="Donate: ", bootstyle="secondary").grid(
+            row=2, column=0, sticky="w", pady=(6, 0)
+        )
+        livepix = ttk.Label(
+            corpo,
+            text="LivePix",
+            bootstyle="primary",
+            cursor="hand2",
+            font=("Segoe UI", 9, "underline"),
+        )
+        livepix.grid(row=2, column=1, sticky="w", pady=(6, 0))
+        livepix.bind("<Button-1>", lambda _evento: self._abrir_url(URL_LIVEPIX))
+        paypal = ttk.Label(
+            corpo,
+            text="PayPal",
+            bootstyle="primary",
+            cursor="hand2",
+            font=("Segoe UI", 9, "underline"),
+        )
+        paypal.grid(row=2, column=2, sticky="w", padx=(12, 0), pady=(6, 0))
+        paypal.bind("<Button-1>", lambda _evento: self._copiar_email_paypal())
+
         ttk.Button(
             corpo, text="OK", bootstyle="success", width=10, command=dialogo.destroy
-        ).grid(row=2, column=0, columnspan=2, sticky="e", pady=(16, 0))
+        ).grid(row=3, column=0, columnspan=3, sticky="e", pady=(16, 0))
 
         dialogo.update_idletasks()
         x = self.winfo_x() + max((self.winfo_width() - dialogo.winfo_width()) // 2, 0)

@@ -572,7 +572,7 @@ def testar_gui() -> None:
                 janela._limpar_orcamento()
                 assert janela.btn_copiar_orcamento.winfo_manager() == ""
 
-            # Links externos e diálogo de conclusão com crédito linkado.
+            # Links externos e diálogo de conclusão com crédito e doações.
             with patch.object(app_modulo.webbrowser, "open") as abrir:
                 janela._abrir_documentacao()
                 abrir.assert_called_once_with(app_modulo.URL_DOCUMENTACAO)
@@ -587,14 +587,30 @@ def testar_gui() -> None:
             assert dialogo.winfo_exists()
             assert dialogo.title() == "Conversão concluída"
             textos: list[str] = []
+            widgets_por_texto: dict[str, object] = {}
             for filho in dialogo.winfo_children():
                 for neto in filho.winfo_children():
                     try:
-                        textos.append(neto.cget("text"))
+                        texto = str(neto.cget("text"))
                     except Exception:
-                        pass
+                        continue
+                    textos.append(texto)
+                    widgets_por_texto[texto] = neto
             assert "Desenvolvedor: " in textos
             assert app_modulo.NOME_DESENVOLVEDOR in textos
+            assert "Donate: " in textos
+            assert "LivePix" in textos
+            assert "PayPal" in textos
+
+            with patch.object(app_modulo.webbrowser, "open") as abrir:
+                widgets_por_texto["LivePix"].event_generate("<Button-1>")
+                janela.update()
+                abrir.assert_called_once_with(app_modulo.URL_LIVEPIX)
+
+            janela.clipboard_clear()
+            widgets_por_texto["PayPal"].event_generate("<Button-1>")
+            janela.update()
+            assert janela.clipboard_get() == app_modulo.EMAIL_PAYPAL
             dialogo.destroy()
 
             # Tamanho, quantidade e diâmetro do suporte voltam como padrão na
