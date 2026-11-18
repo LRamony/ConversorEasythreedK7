@@ -98,6 +98,43 @@ converter_stl_para_k7("modelo.stl", 60)  # mesmo pipeline
 
 Os testes substituem o `subprocess.run` por uma função falsa, então **não é preciso ter o PrusaSlicer instalado** para validar escala, centralização, trava de 95 mm, limpeza do STL temporário e a criação da interface.
 
+## Gerando o `.exe`
+
+Com o venv ativado (ou chamando o Python dele), execute na pasta do projeto:
+
+```powershell
+.\.venv\Scripts\python.exe -m PyInstaller --noconfirm --onefile --windowed --name ConversorK7 --icon icon.ico --add-data "k7_config.ini;." --collect-all trimesh --collect-all ttkbootstrap --collect-all networkx --hidden-import=lxml app.py
+```
+
+Para forçar uma reconstrução completa (limpa o cache do PyInstaller):
+
+```powershell
+.\.venv\Scripts\python.exe -m PyInstaller --noconfirm --onefile --windowed --clean --name ConversorK7 --icon icon.ico --add-data "k7_config.ini;." --collect-all trimesh --collect-all ttkbootstrap --collect-all networkx --hidden-import=lxml app.py
+```
+
+Se der `PermissionError: [WinError 5]`, é porque uma instância antiga está usando o arquivo. Feche o programa (ou encerre o processo) e rode o comando novamente:
+
+```powershell
+Get-Process -Name ConversorK7 -ErrorAction SilentlyContinue | Stop-Process -Force
+```
+
+### Onde o executável fica
+
+Depois que o build terminar com `Build complete!`, o arquivo estará em:
+
+```
+ConversorEasythreedK7\dist\ConversorK7.exe
+```
+
+Ou, de forma relativa à pasta do projeto: `dist\ConversorK7.exe`. Ele é **one-file**: pode ser copiado sozinho para outra máquina, sem precisar levar o `k7_config.ini` junto (ele já vem embutido).
+
+Para conferir rapidamente se o `.exe` abriu e encontrou o perfil:
+
+```powershell
+& ".\dist\ConversorK7.exe" --selftest
+Get-Content ".\dist\selftest_ok.txt"
+```
+
 ## Instalando o PrusaSlicer
 
 Baixe o instalador em <https://www.prusaslicer.org/> e use o executável de console:
