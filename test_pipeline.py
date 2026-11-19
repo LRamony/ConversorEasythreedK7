@@ -17,6 +17,7 @@ import subprocess
 import sys
 import threading
 import tempfile
+import time
 from pathlib import Path
 from unittest.mock import patch
 
@@ -775,6 +776,59 @@ def testar_gui() -> None:
                 )
                 assert conversor.call_args.kwargs["simplificar_pesado"] is True
             janela.var_simplificar_pesado.set(False)
+
+            # Um resultado antigo não pode prender a fila da prévia: precisa
+            # liberar a thread e rodar a análise pendente com os dados atuais.
+            analise_falsa = conv.AnaliseMalha(
+                dimensoes_originais=(10.0, 20.0, 5.0),
+                dimensoes_finais=(47.5, 95.0, 23.75),
+                fator_escala=4.75,
+                medida_aplicada=95.0,
+                partes=1,
+                faces_originais=100,
+                faces_finais=100,
+            )
+            with patch.object(
+                app_modulo, "analisar_arquivo", return_value=analise_falsa
+            ):
+                janela._analise_ocupada = True
+                janela._analise_geracao = 10
+                janela._analise_pendente = ("peca.3mf", 95.0, 1, False)
+                janela._enfileirar(("analise", 9, analise_falsa))
+                for _tentativa in range(40):
+                    janela.update()
+                    time.sleep(0.01)
+                    if janela._analise_geracao == 11 and not janela._analise_ocupada:
+                        break
+                assert janela._analise_geracao == 11
+                assert janela._analise_pendente is None
+                assert janela._analise_ocupada is False
+                assert "95.00" in janela.lbl_final.cget("text")
+                # Coluna ao lado do texto: medidas de UMA peça, não do conjunto.
+                assert janela.lbl_largura.cget("text") == "Largura (X): 47.50 mm"
+                assert (
+                    janela.lbl_comprimento.cget("text")
+                    == "Comprimento (Y): 95.00 mm"
+                )
+                assert janela.lbl_altura.cget("text") == "Altura (Z): 23.75 mm"
+
+            conjunto = conv.AnaliseMalha(
+                dimensoes_originais=(10.0, 20.0, 5.0),
+                dimensoes_finais=(23.25, 95.0, 11.62),
+                fator_escala=2.325,
+                medida_aplicada=95.0,
+                partes=1,
+                quantidade=2,
+                colunas=1,
+                linhas=2,
+                faces_originais=200,
+                faces_finais=200,
+            )
+            janela._mostrar_analise(conjunto)
+            assert janela.lbl_largura.cget("text") == "Largura (X): 23.25 mm"
+            assert janela.lbl_comprimento.cget("text") == "Comprimento (Y): 46.50 mm"
+            assert janela.lbl_altura.cget("text") == "Altura (Z): 11.62 mm"
+            assert "Conjunto 1x2" in janela.lbl_final.cget("text")
 
             # Sem resultado, o botão de copiar não está gerenciado pelo grid.
             assert janela.btn_copiar_orcamento.winfo_manager() == ""

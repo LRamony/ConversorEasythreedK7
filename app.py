@@ -544,6 +544,10 @@ class AppK7(ttk.Window):
         spin.grid(row=0, column=1, sticky="w", padx=(10, 0))
         spin.bind("<KeyRelease>", self._ao_mudar_tamanho)
         spin.bind("<FocusOut>", self._ao_mudar_tamanho)
+        # As setas do Spinbox não geram KeyRelease; sem isto a prévia só
+        # atualizava quando o campo perdia o foco.
+        spin.bind("<<Increment>>", self._ao_mudar_tamanho)
+        spin.bind("<<Decrement>>", self._ao_mudar_tamanho)
 
         ttk.Label(
             cartao_tamanho, text="Quantidade de peças:", bootstyle="primary"
@@ -622,20 +626,64 @@ class AppK7(ttk.Window):
         ).grid(row=2, column=0, columnspan=2, sticky="w", pady=(6, 0))
 
         cartao_previa = self._cartao(aba, "Prévia da peça")
+        cartao_previa.columnconfigure(0, weight=1)
+        # wraplength evita que uma linha longa empurre a coluna de medidas
+        # para fora do cartão quando a janela está no tamanho mínimo.
         self.lbl_dimensoes = ttk.Label(
-            cartao_previa, text="Dimensões atuais: —", bootstyle="primary"
+            cartao_previa,
+            text="Dimensões atuais: —",
+            bootstyle="primary",
+            wraplength=560,
+            justify="left",
         )
         self.lbl_dimensoes.grid(row=0, column=0, sticky="w")
         self.lbl_escala = ttk.Label(
-            cartao_previa, text="Fator de escala: —", bootstyle="secondary"
+            cartao_previa,
+            text="Fator de escala: —",
+            bootstyle="secondary",
+            wraplength=560,
+            justify="left",
         )
         self.lbl_escala.grid(row=1, column=0, sticky="w", pady=(3, 0))
-        self.lbl_final = ttk.Label(cartao_previa, text="Após o ajuste: —", bootstyle="secondary")
+        self.lbl_final = ttk.Label(
+            cartao_previa,
+            text="Após o ajuste: —",
+            bootstyle="secondary",
+            wraplength=560,
+            justify="left",
+        )
         self.lbl_final.grid(row=2, column=0, sticky="w", pady=(3, 0))
         self.lbl_triangulos = ttk.Label(
-            cartao_previa, text="Triângulos: —", bootstyle="secondary"
+            cartao_previa,
+            text="Triângulos: —",
+            bootstyle="secondary",
+            wraplength=560,
+            justify="left",
         )
         self.lbl_triangulos.grid(row=3, column=0, sticky="w", pady=(3, 0))
+
+        # Coluna à direita do texto: medidas de uma única peça, já escalada.
+        ttk.Separator(cartao_previa, orient="vertical").grid(
+            row=0, column=1, rowspan=4, sticky="ns", padx=(16, 14)
+        )
+        ttk.Label(
+            cartao_previa,
+            text="Uma peça (com escala)",
+            bootstyle="info",
+            font=("Segoe UI", 9, "bold"),
+        ).grid(row=0, column=2, sticky="w")
+        self.lbl_largura = ttk.Label(
+            cartao_previa, text="Largura (X): —", bootstyle="secondary"
+        )
+        self.lbl_largura.grid(row=1, column=2, sticky="w", pady=(3, 0))
+        self.lbl_comprimento = ttk.Label(
+            cartao_previa, text="Comprimento (Y): —", bootstyle="secondary"
+        )
+        self.lbl_comprimento.grid(row=2, column=2, sticky="w", pady=(3, 0))
+        self.lbl_altura = ttk.Label(
+            cartao_previa, text="Altura (Z): —", bootstyle="secondary"
+        )
+        self.lbl_altura.grid(row=3, column=2, sticky="w", pady=(3, 0))
 
         self.var_arquivo.trace_add("write", lambda *_: self._atualizar_previa_saida())
         self.var_saida.trace_add("write", lambda *_: self._atualizar_previa_saida())
@@ -1365,6 +1413,16 @@ class AppK7(ttk.Window):
             self._limpar_previa()
             return
 
+        # Enquanto recalcula, nada de valores antigos na tela: isso fazia
+        # parecer que a prévia não respondia à mudança de tamanho/arquivo.
+        self.lbl_dimensoes.configure(text="Dimensões atuais: calculando...")
+        self.lbl_escala.configure(text="Fator de escala: calculando...")
+        self.lbl_final.configure(text="Após o ajuste: calculando...")
+        self.lbl_triangulos.configure(text="Triângulos: calculando...")
+        self.lbl_largura.configure(text="Largura (X): calculando...")
+        self.lbl_comprimento.configure(text="Comprimento (Y): calculando...")
+        self.lbl_altura.configure(text="Altura (Z): calculando...")
+
         parametros = (
             arquivo,
             self._medida_atual(),
@@ -1378,7 +1436,6 @@ class AppK7(ttk.Window):
             self._analise_pendente = parametros
             return
 
-        self.lbl_dimensoes.configure(text="Dimensões atuais: calculando...")
         self._analise_ocupada = True
         threading.Thread(
             target=self._worker_analise,
@@ -1416,11 +1473,18 @@ class AppK7(ttk.Window):
         self.lbl_escala.configure(
             text=f"Fator de escala: {analise.fator_escala:.4f}x  ({detalhe})"
         )
+
+        # Medidas de uma peça: a análise devolve o conjunto inteiro quando
+        # há várias cópias, então usamos a malha original × fator de escala.
+        por_peca = tuple(
+            float(valor) * analise.fator_escala
+            for valor in analise.dimensoes_originais
+        )
+        self.lbl_largura.configure(text=f"Largura (X): {por_peca[0]:.2f} mm")
+        self.lbl_comprimento.configure(text=f"Comprimento (Y): {por_peca[1]:.2f} mm")
+        self.lbl_altura.configure(text=f"Altura (Z): {por_peca[2]:.2f} mm")
+
         if analise.quantidade > 1:
-            por_peca = tuple(
-                float(valor) * analise.fator_escala
-                for valor in analise.dimensoes_originais
-            )
             self.lbl_final.configure(
                 text=f"Conjunto {analise.colunas}x{analise.linhas}: "
                 f"{_fmt(analise.dimensoes_finais)} mm\n"
@@ -1460,6 +1524,9 @@ class AppK7(ttk.Window):
         self.lbl_escala.configure(text="Fator de escala: —")
         self.lbl_final.configure(text="Após o ajuste: —")
         self.lbl_triangulos.configure(text="Triângulos: —", bootstyle="secondary")
+        self.lbl_largura.configure(text="Largura (X): —")
+        self.lbl_comprimento.configure(text="Comprimento (Y): —")
+        self.lbl_altura.configure(text="Altura (Z): —")
 
     # ------------------------------------------------------------------
     # Conversão
@@ -1627,14 +1694,19 @@ class AppK7(ttk.Window):
                     self._escrever_log(item[1], item[2])
 
                 elif tipo in ("analise", "analise_erro"):
-                    if item[1] != self._analise_geracao:
-                        continue  # resultado antigo (tamanho mudou)
+                    # Sempre libera a thread de prévia, mesmo quando este
+                    # resultado já está desatualizado. Sem isso, uma mudança
+                    # de tamanho/arquivo durante o cálculo deixava a prévia
+                    # presa para sempre no estado "calculando...".
                     self._analise_ocupada = False
-                    if tipo == "analise":
-                        self._mostrar_analise(item[2])
-                    else:
-                        self._limpar_previa()
-                        self._escrever_log("warn", f"Prévia indisponível: {item[2]}")
+                    if item[1] == self._analise_geracao:
+                        if tipo == "analise":
+                            self._mostrar_analise(item[2])
+                        else:
+                            self._limpar_previa()
+                            self._escrever_log(
+                                "warn", f"Prévia indisponível: {item[2]}"
+                            )
                     pendente = self._analise_pendente
                     self._analise_pendente = None
                     if pendente is not None:
