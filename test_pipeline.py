@@ -673,12 +673,25 @@ def testar_gui() -> None:
 
             # Alterar um ajuste salva na hora; Reset volta ao padrão e salva.
             janela.vars_impressao["fill_density"].set(55)
+            janela.vars_impressao["temperature"].set(215)
+            janela.vars_impressao["bed_temperature"].set(40)
             janela.var_aderencia.set("Raft")
             janela.update()
             dados = json.loads(arquivo_prefs.read_text(encoding="utf-8"))
             assert dados["fill_density"] == 55
             assert dados["aderencia_mesa"] == "Raft"
             assert janela._aderencia_mesa() == "Raft"
+
+            # O resumo da aba Configurações acompanha os ajustes e o núcleo
+            # recebe exatamente esses valores para gravar no .ini temporário.
+            resumo = janela.var_resumo_limites.get()
+            assert "Hotend: 200 °C (1ª camada) / 215 °C" in resumo
+            assert "Mesa: 40 °C" in resumo
+            assert "Preenchimento: 55%" in resumo
+            parametros_gui = conv.parametros_config_impressao(janela._config_impressao())
+            assert parametros_gui["temperature"] == "215"
+            assert parametros_gui["bed_temperature"] == "40"
+            assert parametros_gui["fill_density"] == "55%"
 
             janela.btn_reset_impressao.invoke()
             janela.update()
@@ -691,6 +704,10 @@ def testar_gui() -> None:
                 for chave, (_minimo, _maximo, padrao) in conv.LIMITES_IMPRESSAO.items()
             )
             assert dados["aderencia_mesa"] == conv.ADERENCIA_MESA_PADRAO
+            resumo = janela.var_resumo_limites.get()
+            assert "Hotend: 200 °C (1ª camada) / 195 °C" in resumo
+            assert "Mesa: 0 °C" in resumo
+            assert "Preenchimento: 15%" in resumo
 
             # Sem resultado, o botão de copiar não está gerenciado pelo grid.
             assert janela.btn_copiar_orcamento.winfo_manager() == ""

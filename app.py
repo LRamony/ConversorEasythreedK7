@@ -230,6 +230,7 @@ class AppK7(ttk.Window):
         self.var_config = tk.StringVar(value=str(CONFIG_PADRAO))
         self.var_suporte = tk.StringVar(value=SUPORTE_PADRAO)
         self.var_status = tk.StringVar(value="Pronto para converter.")
+        self.var_resumo_limites = tk.StringVar(value="")
 
         # Aba Calc: só a margem é obrigatória; os custos vêm com padrões.
         self.var_margem = tk.DoubleVar(value=30.0)
@@ -247,10 +248,12 @@ class AppK7(ttk.Window):
         self._construir_interface()
         self._aplicar_config_salva()
 
-        # Ajustes de impressão são persistidos assim que o valor muda.
+        # Ajustes de impressão são persistidos e refletidos no resumo da aba
+        # Configurações assim que o valor muda.
         for variavel in self.vars_impressao.values():
-            variavel.trace_add("write", lambda *_: self._salvar_config())
-        self.var_aderencia.trace_add("write", lambda *_: self._salvar_config())
+            variavel.trace_add("write", self._ao_mudar_impressao)
+        self.var_aderencia.trace_add("write", self._ao_mudar_impressao)
+        self._atualizar_resumo_limites()
 
         # Qualquer alteração nos valores recalcula automaticamente.
         for variavel in (
@@ -691,11 +694,9 @@ class AppK7(ttk.Window):
         cartao_limites = self._cartao(aba, "Limites aplicados no G-code")
         ttk.Label(
             cartao_limites,
-            text=f"Mesa: {LARGURA_MESA_MM:g} x {PROFUNDIDADE_MESA_MM:g} x "
-            f"{ALTURA_MESA_MM:g} mm  |  Tamanho útil: {LIMITE_SEGURANCA_MM:g} mm\n"
-            "Bico: 0,4 mm  |  Filamento: 1,75 mm  |  Hotend: 200 °C (1ª camada) / 195 °C\n"
-            "Mesa: 0 °C  |  Camada: 0,2 mm  |  Preenchimento: 15%  |  Suporte: escolhido na aba Converter",
+            textvariable=self.var_resumo_limites,
             bootstyle="secondary",
+            wraplength=850,
             justify="left",
         ).pack(anchor="w")
 
@@ -988,11 +989,37 @@ class AppK7(ttk.Window):
             self.vars_impressao[chave].set(padrao)
         self.var_aderencia.set(ADERENCIA_MESA_PADRAO)
         self._salvar_config()
+        self._atualizar_resumo_limites()
         self.var_status.set("Ajustes de impressão restaurados ao padrão.")
 
     def _aderencia_mesa(self) -> str:
         valor = self.var_aderencia.get()
         return valor if valor in ADERENCIA_MESA_OPCOES else ADERENCIA_MESA_PADRAO
+
+    def _atualizar_resumo_limites(self) -> None:
+        """Mostra na aba Configurações os valores que serão usados no G-code."""
+
+        def valor(chave: str) -> int:
+            return limitar_impressao(chave, self._valor_impressao(chave))
+
+        self.var_resumo_limites.set(
+            f"Mesa: {LARGURA_MESA_MM:g} x {PROFUNDIDADE_MESA_MM:g} x "
+            f"{ALTURA_MESA_MM:g} mm  |  Tamanho útil: {LIMITE_SEGURANCA_MM:g} mm\n"
+            f"Bico: 0,4 mm  |  Filamento: 1,75 mm  |  "
+            f"Hotend: {valor('first_layer_temperature')} °C (1ª camada) / "
+            f"{valor('temperature')} °C\n"
+            f"Mesa: {valor('bed_temperature')} °C "
+            f"(1ª camada: {valor('first_layer_bed_temperature')} °C)  |  "
+            f"Camada: 0,2 mm  |  Preenchimento: {valor('fill_density')}%\n"
+            f"Velocidades: perímetro {valor('perimeter_speed')} mm/s  |  "
+            f"preenchimento {valor('infill_speed')} mm/s  |  "
+            f"viagem {valor('travel_speed')} mm/s  |  "
+            "Suporte: escolhido na aba Converter"
+        )
+
+    def _ao_mudar_impressao(self, *_eventos) -> None:
+        self._salvar_config()
+        self._atualizar_resumo_limites()
 
     def _config_impressao(self) -> dict[str, int]:
         """Valida todos os ajustes de impressão antes de enviá-los ao fatiador."""
