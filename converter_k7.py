@@ -34,6 +34,8 @@ ALTURA_MESA_MM = 100.0
 # fatiador eram as principais causas de consumo de RAM/CPU sem controle.
 TAMANHO_MAXIMO_ARQUIVO_MB = 200
 MAX_FACES = 2_000_000
+# Redução a partir da qual o aviso de perda de qualidade é mais explícito.
+REDUCAO_QUALIDADE_PERCENTUAL = 20.0
 MAX_LINHAS_LOG = 200
 TIMEOUT_FATIAMENTO_S = 300.0
 QUANTIDADE_MAXIMA = 20
@@ -344,6 +346,9 @@ class AnaliseMalha:
     quantidade: int = 1
     colunas: int = 1
     linhas: int = 1
+    faces_originais: int = 0
+    faces_finais: int = 0
+    simplificado: bool = False
 
 
 @dataclass(frozen=True)
@@ -460,8 +465,57 @@ def _distribuir_copias(
     return trimesh.util.concatenate(copias)
 
 
+def _simplificar_ate_limite(
+    malha: trimesh.Trimesh, quantidade: int, faces_totais: int, log: LogFn
+) -> trimesh.Trimesh:
+    """Decima a malha até o total (contando as cópias) caber em MAX_FACES."""
+    alvo = max(1, MAX_FACES // max(1, quantidade))
+    simples: trimesh.Trimesh | None = None
+    for _tentativa in range(4):
+        try:
+            simples = malha.simplify_quadric_decimation(face_count=alvo)
+        except Exception as exc:  # o backend de decimação pode não estar disponível
+            raise ErroConversao(
+                "Não foi possível simplificar a malha automaticamente "
+                f"({exc}). Verifique se o pacote fast-simplification está instalado "
+                "ou simplifique o modelo antes de converter."
+            ) from exc
+        if simples is None or simples.is_empty or len(simples.faces) == 0:
+            raise ErroConversao("A simplificação não produziu uma malha válida.")
+
+        faces_finais = len(simples.faces) * quantidade
+        if faces_finais <= MAX_FACES:
+            break
+        # O alvo da decimação é aproximado; reduz um pouco mais e tenta de novo.
+        alvo = max(1, int(alvo * (MAX_FACES / faces_finais) * 0.95))
+    else:
+        raise ErroConversao(
+            f"Não foi possível reduzir a malha a {MAX_FACES:,} triângulos. "
+            "Reduza a quantidade ou simplifique o modelo antes de converter."
+        )
+
+    reducao = (1 - faces_finais / faces_totais) * 100 if faces_totais else 0.0
+    if reducao >= REDUCAO_QUALIDADE_PERCENTUAL:
+        efeito = (
+            "A perda de detalhes finos pode ser perceptível; confira a peça "
+            "antes de imprimir."
+        )
+    else:
+        efeito = "A perda de detalhes deve ser pequena."
+    log(
+        "warn",
+        f"Simplificação automática: {faces_totais:,} → {faces_finais:,} triângulos "
+        f"(-{reducao:.1f}%). {efeito}",
+    )
+    return simples
+
+
 def _carregar_e_preparar(
-    caminho: Path, medida: float, log: LogFn, quantidade: int = 1
+    caminho: Path,
+    medida: float,
+    log: LogFn,
+    quantidade: int = 1,
+    simplificar_pesado: bool = False,
 ) -> tuple[trimesh.Trimesh, AnaliseMalha]:
     """Carrega a malha, distribui as cópias e centraliza na mesa da K7."""
     quantidade = validar_quantidade(quantidade, log)
@@ -487,18 +541,20 @@ def _carregar_e_preparar(
             raise ErroConversao("O arquivo não contém nenhuma geometria.")
         partes = len(cena.geometry)
         total_faces = sum(len(geometria.faces) for geometria in cena.geometry.values())
-        if total_faces > MAX_FACES:
+        if total_faces > MAX_FACES and not simplificar_pesado:
             raise ErroConversao(
                 f"Modelo com {total_faces:,} triângulos é pesado demais "
-                f"(limite: {MAX_FACES:,}). Simplifique o modelo antes de converter."
+                f"(limite: {MAX_FACES:,}). Simplifique o modelo antes de converter "
+                "ou ative a simplificação automática na aba Ajustes de impressão."
             )
         malha = cena.dump(concatenate=True)
     elif isinstance(cena, trimesh.Trimesh):
         partes = 1
-        if len(cena.faces) > MAX_FACES:
+        if len(cena.faces) > MAX_FACES and not simplificar_pesado:
             raise ErroConversao(
                 f"Modelo com {len(cena.faces):,} triângulos é pesado demais "
-                f"(limite: {MAX_FACES:,}). Simplifique o modelo antes de converter."
+                f"(limite: {MAX_FACES:,}). Simplifique o modelo antes de converter "
+                "ou ative a simplificação automática na aba Ajustes de impressão."
             )
         malha = cena
     else:
@@ -506,6 +562,22 @@ def _carregar_e_preparar(
 
     if malha is None or malha.is_empty:
         raise ErroConversao("A malha carregada está vazia.")
+
+    # A contagem já inclui todas as cópias pedidas. A simplificação atua na
+    # malha base (antes das cópias), para não multiplicar trabalho e memória.
+    faces_originais = len(malha.faces) * quantidade
+    faces_finais = faces_originais
+    simplificado = False
+    if faces_originais > MAX_FACES:
+        if not simplificar_pesado:
+            raise ErroConversao(
+                f"{quantidade} cópia(s) somam {faces_originais:,} triângulos e passam do "
+                f"limite de {MAX_FACES:,}. Reduza a quantidade, simplifique o modelo "
+                "ou ative a simplificação automática na aba Ajustes de impressão."
+            )
+        malha = _simplificar_ate_limite(malha, quantidade, faces_originais, log)
+        faces_finais = len(malha.faces) * quantidade
+        simplificado = True
 
     dimensoes_originais = tuple(float(v) for v in malha.extents)
     maior_lado = max(dimensoes_originais)
@@ -521,13 +593,6 @@ def _carregar_e_preparar(
     # O tamanho escolhido é o teto; a grade pode reduzir a escala para que
     # todas as cópias caibam na área útil de 95 mm.
     fator_escala = min(medida / maior_lado, escala_grade)
-
-    total_faces = len(malha.faces) * quantidade
-    if total_faces > MAX_FACES:
-        raise ErroConversao(
-            f"{quantidade} cópia(s) somam {total_faces:,} triângulos e passam do "
-            f"limite de {MAX_FACES:,}. Reduza a quantidade ou simplifique o modelo."
-        )
 
     malha.apply_scale(fator_escala)
     if quantidade > 1:
@@ -556,9 +621,17 @@ def _carregar_e_preparar(
         quantidade=quantidade,
         colunas=colunas,
         linhas=linhas,
+        faces_originais=faces_originais,
+        faces_finais=faces_finais,
+        simplificado=simplificado,
     )
 
     log("info", f"Dimensões originais: {_formatar_dimensoes(dimensoes_originais)} mm ({partes} parte(s))")
+    log(
+        "info",
+        f"Triângulos enviados ao fatiador: {faces_finais:,} "
+        f"(limite: {MAX_FACES:,}, contando as cópias)",
+    )
     if quantidade > 1:
         log(
             "info",
@@ -577,6 +650,7 @@ def analisar_arquivo(
     log: LogFn = _sem_log,
     *,
     quantidade: int = 1,
+    simplificar_pesado: bool = False,
 ) -> AnaliseMalha:
     """Só lê e mede a peça (usado pela prévia da interface)."""
     caminho = Path(arquivo).expanduser()
@@ -584,7 +658,9 @@ def analisar_arquivo(
         raise ErroConversao(f"Arquivo não encontrado: {caminho}")
 
     medida = validar_medida(medida_maxima_mm, log)
-    return _carregar_e_preparar(caminho, medida, log, quantidade)[1]
+    return _carregar_e_preparar(
+        caminho, medida, log, quantidade, simplificar_pesado
+    )[1]
 
 
 def _gravar_ini_com_suporte(
@@ -690,6 +766,7 @@ def converter_3mf_para_k7(
     suporte_fino_mm: float = SUPORTE_FINO_PADRAO_MM,
     config_impressao: dict[str, float] | None = None,
     aderencia_mesa: str | None = None,
+    simplificar_pesado: bool = False,
 ) -> ResultadoConversao:
     """Redimensiona, centraliza e fatia o arquivo para a Easythreed K7."""
     caminho = Path(arquivo_3mf).expanduser()
@@ -726,7 +803,9 @@ def converter_3mf_para_k7(
     if cancelar is not None and cancelar():
         raise ErroConversao("Conversão cancelada pelo usuário.")
 
-    malha, analise = _carregar_e_preparar(caminho, medida, log, quantidade)
+    malha, analise = _carregar_e_preparar(
+        caminho, medida, log, quantidade, simplificar_pesado
+    )
 
     if cancelar is not None and cancelar():
         raise ErroConversao("Conversão cancelada pelo usuário.")

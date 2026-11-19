@@ -47,7 +47,9 @@ from converter_k7 import (
     LARGURA_MESA_MM,
     LIMITES_IMPRESSAO,
     LIMITE_SEGURANCA_MM,
+    MAX_FACES,
     PROFUNDIDADE_MESA_MM,
+    REDUCAO_QUALIDADE_PERCENTUAL,
     EXTRUSAO_SUPORTE_MAX_MM,
     QUANTIDADE_MAXIMA,
     SUPORTE_FINO_MAX_MM,
@@ -221,6 +223,7 @@ class AppK7(ttk.Window):
             for chave, (_minimo, _maximo, padrao) in LIMITES_IMPRESSAO.items()
         }
         self.var_aderencia = tk.StringVar(value=ADERENCIA_MESA_PADRAO)
+        self.var_simplificar_pesado = tk.BooleanVar(value=False)
         self.var_quantidade = tk.IntVar(value=1)
         self.var_suporte_fino = tk.BooleanVar(value=False)
         self.var_suporte_fino_mm = tk.DoubleVar(value=SUPORTE_FINO_PADRAO_MM)
@@ -253,6 +256,7 @@ class AppK7(ttk.Window):
         for variavel in self.vars_impressao.values():
             variavel.trace_add("write", self._ao_mudar_impressao)
         self.var_aderencia.trace_add("write", self._ao_mudar_impressao)
+        self.var_simplificar_pesado.trace_add("write", self._ao_mudar_impressao)
         self._atualizar_resumo_limites()
 
         # Qualquer alteração nos valores recalcula automaticamente.
@@ -341,6 +345,7 @@ class AppK7(ttk.Window):
                 for chave in LIMITES_IMPRESSAO
             },
             "aderencia_mesa": self.var_aderencia.get(),
+            "simplificar_pesado": self.var_simplificar_pesado.get(),
             "margem": self.var_margem.get(),
             "tempo_calculo": self.var_tempo_calculo.get(),
             "gcode_calculo": self.var_gcode_calculo.get().strip(),
@@ -381,6 +386,9 @@ class AppK7(ttk.Window):
         aderencia = str(self.config_salva.get("aderencia_mesa", ""))
         self.var_aderencia.set(
             aderencia if aderencia in ADERENCIA_MESA_OPCOES else ADERENCIA_MESA_PADRAO
+        )
+        self.var_simplificar_pesado.set(
+            bool(self.config_salva.get("simplificar_pesado", False))
         )
 
         suporte = str(self.config_salva.get("suporte", ""))
@@ -624,6 +632,10 @@ class AppK7(ttk.Window):
         self.lbl_escala.grid(row=1, column=0, sticky="w", pady=(3, 0))
         self.lbl_final = ttk.Label(cartao_previa, text="Após o ajuste: —", bootstyle="secondary")
         self.lbl_final.grid(row=2, column=0, sticky="w", pady=(3, 0))
+        self.lbl_triangulos = ttk.Label(
+            cartao_previa, text="Triângulos: —", bootstyle="secondary"
+        )
+        self.lbl_triangulos.grid(row=3, column=0, sticky="w", pady=(3, 0))
 
         self.var_arquivo.trace_add("write", lambda *_: self._atualizar_previa_saida())
         self.var_saida.trace_add("write", lambda *_: self._atualizar_previa_saida())
@@ -745,6 +757,26 @@ class AppK7(ttk.Window):
             text="None: sem contorno extra. Skirt: uma volta ao redor da peça para "
             "iniciar o fluxo. Brim: borda na primeira camada, com mais fixação. "
             "Raft: base sob a peça, a opção mais firme e que consome mais material e tempo.",
+            bootstyle="secondary",
+            wraplength=840,
+            justify="left",
+        ).pack(anchor="w", pady=(8, 0))
+
+        cartao_simplificacao = self._cartao(pai, "Simplificação de modelos pesados")
+        ttk.Checkbutton(
+            cartao_simplificacao,
+            text=f"Simplificar automaticamente acima de {MAX_FACES:,} triângulos",
+            variable=self.var_simplificar_pesado,
+            bootstyle="success",
+        ).pack(anchor="w")
+        ttk.Label(
+            cartao_simplificacao,
+            text="A contagem inclui todas as peças pedidas. Ao marcar, a malha é "
+            "reduzida até o limite antes de fatiar, em vez de recusar a conversão. "
+            "A redução pode remover detalhes finos: a prévia e o log informam quantos "
+            "triângulos foram removidos e se a perda de qualidade pode ser perceptível. "
+            "Desmarcado, modelos acima do limite são recusados com orientações para "
+            "simplificar o arquivo ou reduzir a quantidade.",
             bootstyle="secondary",
             wraplength=840,
             justify="left",
@@ -984,10 +1016,11 @@ class AppK7(ttk.Window):
         variavel.set(limitar_impressao(chave, valor))
 
     def _reset_impressao(self) -> None:
-        """Restaura preenchimento, velocidades, temperaturas e aderência."""
+        """Restaura preenchimento, velocidades, temperaturas, aderência e simplificação."""
         for chave, (_minimo, _maximo, padrao) in LIMITES_IMPRESSAO.items():
             self.vars_impressao[chave].set(padrao)
         self.var_aderencia.set(ADERENCIA_MESA_PADRAO)
+        self.var_simplificar_pesado.set(False)
         self._salvar_config()
         self._atualizar_resumo_limites()
         self.var_status.set("Ajustes de impressão restaurados ao padrão.")
@@ -1013,7 +1046,10 @@ class AppK7(ttk.Window):
             f"Camada: 0,2 mm  |  Preenchimento: {valor('fill_density')}%\n"
             f"Velocidades: perímetro {valor('perimeter_speed')} mm/s  |  "
             f"preenchimento {valor('infill_speed')} mm/s  |  "
-            f"viagem {valor('travel_speed')} mm/s  |  "
+            f"viagem {valor('travel_speed')} mm/s\n"
+            f"Triângulos: limite de {MAX_FACES:,} no total  |  "
+            f"Simplificação automática: "
+            f"{'ativada' if self.var_simplificar_pesado.get() else 'desativada'}  |  "
             "Suporte: escolhido na aba Converter"
         )
 
@@ -1329,7 +1365,12 @@ class AppK7(ttk.Window):
             self._limpar_previa()
             return
 
-        parametros = (arquivo, self._medida_atual(), self._quantidade_atual())
+        parametros = (
+            arquivo,
+            self._medida_atual(),
+            self._quantidade_atual(),
+            self.var_simplificar_pesado.get(),
+        )
 
         # Uma única thread de prévia por vez: mudar o tamanho não pode criar
         # dezenas de leituras simultâneas da mesma malha.
@@ -1346,10 +1387,20 @@ class AppK7(ttk.Window):
         ).start()
 
     def _worker_analise(
-        self, arquivo: str, medida: float, quantidade: int, geracao: int
+        self,
+        arquivo: str,
+        medida: float,
+        quantidade: int,
+        simplificar_pesado: bool,
+        geracao: int,
     ) -> None:
         try:
-            analise = analisar_arquivo(arquivo, medida, quantidade=quantidade)
+            analise = analisar_arquivo(
+                arquivo,
+                medida,
+                quantidade=quantidade,
+                simplificar_pesado=simplificar_pesado,
+            )
         except Exception as exc:  # a prévia nunca deve derrubar a interface
             self._enfileirar(("analise_erro", geracao, str(exc)))
         else:
@@ -1380,10 +1431,35 @@ class AppK7(ttk.Window):
                 text=f"Após o ajuste: {_fmt(analise.dimensoes_finais)} mm"
             )
 
+        if analise.simplificado:
+            reducao = (
+                (1 - analise.faces_finais / analise.faces_originais) * 100
+                if analise.faces_originais
+                else 0.0
+            )
+            if reducao >= REDUCAO_QUALIDADE_PERCENTUAL:
+                efeito = "Atenção: detalhes finos podem ser perdidos."
+                estilo = "warning"
+            else:
+                efeito = "Perda de detalhes pequena."
+                estilo = "secondary"
+            self.lbl_triangulos.configure(
+                text=f"Triângulos: {analise.faces_originais:,} → "
+                f"{analise.faces_finais:,} (-{reducao:.1f}%). {efeito}",
+                bootstyle=estilo,
+            )
+        else:
+            self.lbl_triangulos.configure(
+                text=f"Triângulos: {analise.faces_finais:,} de "
+                f"{MAX_FACES:,} permitidos.",
+                bootstyle="secondary",
+            )
+
     def _limpar_previa(self) -> None:
         self.lbl_dimensoes.configure(text="Dimensões atuais: —")
         self.lbl_escala.configure(text="Fator de escala: —")
         self.lbl_final.configure(text="Após o ajuste: —")
+        self.lbl_triangulos.configure(text="Triângulos: —", bootstyle="secondary")
 
     # ------------------------------------------------------------------
     # Conversão
@@ -1480,6 +1556,7 @@ class AppK7(ttk.Window):
                 self._diametro_suporte_fino(),
                 self._config_impressao(),
                 self._aderencia_mesa(),
+                self.var_simplificar_pesado.get(),
             ),
             daemon=True,
         ).start()
@@ -1505,6 +1582,7 @@ class AppK7(ttk.Window):
         suporte_fino_mm: float,
         config_impressao: dict[str, int],
         aderencia_mesa: str,
+        simplificar_pesado: bool,
     ) -> None:
         try:
             resultado = converter_3mf_para_k7(
@@ -1521,6 +1599,7 @@ class AppK7(ttk.Window):
                 suporte_fino_mm=suporte_fino_mm,
                 config_impressao=config_impressao,
                 aderencia_mesa=aderencia_mesa,
+                simplificar_pesado=simplificar_pesado,
             )
         except Exception as exc:
             self._enfileirar(("erro", str(exc)))
@@ -1835,9 +1914,21 @@ def main() -> None:
         janela.destroy()
         if getattr(sys, "frozen", False):
             marcador = Path(sys.executable).with_name("selftest_ok.txt")
+            try:
+                import trimesh as _trimesh
+
+                _simples = _trimesh.creation.icosphere(
+                    subdivisions=2
+                ).simplify_quadric_decimation(face_count=50)
+                detalhe_simplificacao = (
+                    f"Simplificação: OK ({len(_simples.faces)} triângulos)\n"
+                )
+            except Exception as exc:  # diagnóstico do bundle one-file
+                detalhe_simplificacao = f"Simplificação: FALHOU ({exc})\n"
             marcador.write_text(
                 f"GUI criada com sucesso.\nPerfil: {CONFIG_PADRAO}\n"
-                f"Perfil encontrado: {CONFIG_PADRAO.is_file()}\n",
+                f"Perfil encontrado: {CONFIG_PADRAO.is_file()}\n"
+                f"{detalhe_simplificacao}",
                 encoding="utf-8",
             )
         return

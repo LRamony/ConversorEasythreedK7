@@ -15,6 +15,7 @@ from __future__ import annotations
 import json
 import subprocess
 import sys
+import threading
 import tempfile
 from pathlib import Path
 from unittest.mock import patch
@@ -240,6 +241,39 @@ def testar_protecoes_travamento(diretorio: Path) -> None:
         else:
             raise AssertionError("esperava ErroConversao por timeout")
     print("  [ok] fatiador preso e encerrado por timeout")
+
+
+def testar_simplificacao_automatica(diretorio: Path) -> None:
+    """A opção reduz malhas pesadas ao limite e avisa sobre perda de detalhes."""
+    modelo = diretorio / "pesado.stl"
+    trimesh.creation.icosphere(subdivisions=2).export(str(modelo))
+
+    with patch.object(conv, "MAX_FACES", 100):
+        # Desligada, a proteção continua recusando a conversão.
+        try:
+            conv.analisar_arquivo(modelo, 50)
+        except conv.ErroConversao as exc:
+            assert "simplificação automática" in str(exc), exc
+        else:
+            raise AssertionError("esperava ErroConversao sem simplificação")
+
+        mensagens: list[tuple[str, str]] = []
+        analise = conv.analisar_arquivo(
+            modelo,
+            50,
+            log=lambda nivel, mensagem: mensagens.append((nivel, mensagem)),
+            simplificar_pesado=True,
+        )
+        assert analise.simplificado is True
+        assert analise.faces_originais > 100
+        assert analise.faces_finais <= 100, analise.faces_finais
+        assert any(
+            nivel == "warn" and "Simplificação automática" in mensagem
+            for nivel, mensagem in mensagens
+        ), mensagens
+        assert any("detalhes" in mensagem for _nivel, mensagem in mensagens), mensagens
+
+    print("  [ok] simplificacao automatica reduz malha e avisa sobre qualidade")
 
 
 def testar_tipo_suporte(diretorio: Path) -> None:
@@ -659,6 +693,10 @@ def testar_gui() -> None:
             )
             assert tuple(janela.cmb_aderencia.cget("values")) == conv.ADERENCIA_MESA_OPCOES
             assert janela.var_aderencia.get() == conv.ADERENCIA_MESA_PADRAO
+            assert janela.var_simplificar_pesado.get() is False
+            assert any(
+                "Simplificar automaticamente" in texto for texto in textos_visiveis
+            )
             titulos = {
                 titulo for _chave, titulo, _unidade, _texto in app_modulo.CAMPOS_IMPRESSAO
             }
@@ -676,10 +714,12 @@ def testar_gui() -> None:
             janela.vars_impressao["temperature"].set(215)
             janela.vars_impressao["bed_temperature"].set(40)
             janela.var_aderencia.set("Raft")
+            janela.var_simplificar_pesado.set(True)
             janela.update()
             dados = json.loads(arquivo_prefs.read_text(encoding="utf-8"))
             assert dados["fill_density"] == 55
             assert dados["aderencia_mesa"] == "Raft"
+            assert dados["simplificar_pesado"] is True
             assert janela._aderencia_mesa() == "Raft"
 
             # O resumo da aba Configurações acompanha os ajustes e o núcleo
@@ -688,6 +728,7 @@ def testar_gui() -> None:
             assert "Hotend: 200 °C (1ª camada) / 215 °C" in resumo
             assert "Mesa: 40 °C" in resumo
             assert "Preenchimento: 55%" in resumo
+            assert "Simplificação automática: ativada" in resumo
             parametros_gui = conv.parametros_config_impressao(janela._config_impressao())
             assert parametros_gui["temperature"] == "215"
             assert parametros_gui["bed_temperature"] == "40"
@@ -698,7 +739,9 @@ def testar_gui() -> None:
             for chave, (_minimo, _maximo, padrao) in conv.LIMITES_IMPRESSAO.items():
                 assert janela.vars_impressao[chave].get() == padrao
             assert janela.var_aderencia.get() == conv.ADERENCIA_MESA_PADRAO
+            assert janela.var_simplificar_pesado.get() is False
             dados = json.loads(arquivo_prefs.read_text(encoding="utf-8"))
+            assert dados["simplificar_pesado"] is False
             assert all(
                 dados[chave] == padrao
                 for chave, (_minimo, _maximo, padrao) in conv.LIMITES_IMPRESSAO.items()
@@ -708,6 +751,30 @@ def testar_gui() -> None:
             assert "Hotend: 200 °C (1ª camada) / 195 °C" in resumo
             assert "Mesa: 0 °C" in resumo
             assert "Preenchimento: 15%" in resumo
+            assert "Simplificação automática: desativada" in resumo
+
+            # A opção também é repassada ao núcleo na thread de conversão.
+            with patch.object(
+                app_modulo, "converter_3mf_para_k7", return_value=object()
+            ) as conversor, patch.object(janela, "_enfileirar"):
+                janela.var_simplificar_pesado.set(True)
+                janela._worker(
+                    "peca.3mf",
+                    50,
+                    "cli.exe",
+                    "config.ini",
+                    None,
+                    threading.Event(),
+                    None,
+                    1,
+                    False,
+                    conv.SUPORTE_FINO_PADRAO_MM,
+                    {},
+                    conv.ADERENCIA_MESA_PADRAO,
+                    True,
+                )
+                assert conversor.call_args.kwargs["simplificar_pesado"] is True
+            janela.var_simplificar_pesado.set(False)
 
             # Sem resultado, o botão de copiar não está gerenciado pelo grid.
             assert janela.btn_copiar_orcamento.winfo_manager() == ""
@@ -797,6 +864,7 @@ def testar_gui() -> None:
             janela.var_quantidade.set(3)
             janela.var_suporte_fino.set(True)
             janela.var_suporte_fino_mm.set(1.5)
+            janela.var_simplificar_pesado.set(True)
             janela.vars_impressao["fill_density"].set(40)
             janela.vars_impressao["perimeter_speed"].set(999)
             janela._ao_sair_campo_impressao("perimeter_speed")
@@ -808,6 +876,7 @@ def testar_gui() -> None:
             assert dados["quantidade"] == 3
             assert dados["suporte_fino"] is True
             assert dados["suporte_fino_mm"] == 1.5
+            assert dados["simplificar_pesado"] is True
             assert dados["fill_density"] == 40
             assert dados["perimeter_speed"] == 60
             assert dados["temperature"] == 210
@@ -827,6 +896,7 @@ def testar_gui() -> None:
             assert janela2.var_quantidade.get() == 3
             assert janela2.var_suporte_fino.get() is True
             assert janela2.var_suporte_fino_mm.get() == 1.5
+            assert janela2.var_simplificar_pesado.get() is True
             assert janela2.vars_impressao["fill_density"].get() == 40
             assert janela2.vars_impressao["perimeter_speed"].get() == 60
             assert janela2.vars_impressao["temperature"].get() == 210
@@ -867,6 +937,7 @@ def main() -> None:
         testar_ajustes_impressao(diretorio)
         testar_quantidade(diretorio)
         testar_protecoes_travamento(diretorio)
+        testar_simplificacao_automatica(diretorio)
         testar_preflight()
         testar_perfil_ini(diretorio)
 

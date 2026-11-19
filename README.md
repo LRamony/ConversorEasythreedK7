@@ -23,7 +23,7 @@ Interface gráfica feita com **ttkbootstrap** sobre o tkinter. Ela:
 | `k7_config.ini` | Perfil da K7 (mesa 100³, bico 0,4, 195/200 °C, mesa 0 °C, suportes automáticos) |
 | `test_pipeline.py` | Testes do pipeline e smoke test da interface |
 | `requirements.txt` | Dependências |
-| `k7_gui_settings.json` | Preferências salvas automaticamente (caminhos, último tamanho, quantidade, ajustes de impressão e diâmetro do suporte) |
+| `k7_gui_settings.json` | Preferências salvas automaticamente (caminhos, último tamanho, quantidade, ajustes de impressão, aderência, diâmetro do suporte e simplificação automática) |
 
 > A interface usa **apenas o tema `bootstrap-dark`** (padrão fixo, sem seletor de temas).
 
@@ -50,7 +50,7 @@ Na aba **Converter**:
 4. Opcionalmente escolha a **pasta de saída** (em branco = mesma pasta do modelo). O nome gerado é `<nome>_K7.gcode`;
 5. Clique em **Converter para G-code**.
 
-O **último tamanho máximo escolhido**, a quantidade de peças, os **ajustes de impressão** e o **diâmetro do suporte** voltam como padrão na próxima execução. Os ajustes de impressão são salvos imediatamente quando você altera um campo; os demais são salvos ao converter ou fechar. O botão **Reset** da aba **Ajustes de impressão** restaura preenchimento, velocidades, temperaturas e aderência à mesa ao padrão. O **Reset** ao lado do campo de suporte restaura apenas o suporte (opção desligada e `0,9 mm` de diâmetro).
+O **último tamanho máximo escolhido**, a quantidade de peças, os **ajustes de impressão**, a aderência, a **simplificação automática** e o **diâmetro do suporte** voltam como padrão na próxima execução. Os ajustes de impressão são salvos imediatamente quando você altera um campo; os demais são salvos ao converter ou fechar. O botão **Reset** da aba **Ajustes de impressão** restaura preenchimento, velocidades, temperaturas, aderência à mesa e desliga a simplificação automática. O **Reset** ao lado do campo de suporte restaura apenas o suporte (opção desligada e `0,9 mm` de diâmetro).
 
 ### Ajustes de impressão
 
@@ -82,6 +82,17 @@ Na aba **Ajustes de impressão**, o seletor **Aderência à mesa de impressão**
 
 Assim como os demais ajustes, nada é gravado no seu perfil: as chaves são aplicadas somente no `.ini` temporário e apagadas ao final da conversão.
 
+### Simplificação automática de modelos pesados
+
+Na aba **Ajustes de impressão**, o cartão **Simplificação de modelos pesados** oferece a opção **Simplificar automaticamente acima de 2.000.000 triângulos** (desligada por padrão). A contagem já inclui todas as peças pedidas: com 2 cópias de um modelo de 1.983.190 triângulos, o total é 3.966.380 e o limite é excedido.
+
+- **Desligada:** a conversão é recusada antes de carregar a malha, com orientações para reduzir a quantidade ou simplificar o arquivo (comportamento original).
+- **Ligada:** a malha é decimada automaticamente até caber no limite — por exemplo, com 2 cópias o alvo é 1.000.000 triângulos por cópia. O aviso aparece no log e na prévia com o antes/depois e o percentual removido.
+
+O aviso de qualidade é proporcional à redução: abaixo de 20% ele informa que a perda de detalhes deve ser pequena; a partir de 20% ele alerta que detalhes finos podem ser perdidos e que vale conferir a peça antes de imprimir. A simplificação usa o backend `fast-simplification` (já incluído no `.exe`), atua na malha original antes de criar as cópias e não altera seu `k7_config.ini`. A escolha é salva imediatamente e volta ao padrão pelo botão **Reset**.
+
+> Simplificar resolve o travamento, não cria detalhes: se o modelo vier de escaneamento com milhões de triângulos, ainda é melhor exportar uma versão com menos resolução quando possível.
+
 ### Tipo de suporte
 
 O seletor da aba **Converter** escolhe o estilo de suporte. O programa **não altera** o seu `k7_config.ini`: ele copia o perfil para um arquivo temporário, aplica as chaves corretas do PrusaSlicer (`support_material_style`, `support_tree_angle`, `support_tree_angle_slow`, `fill_density`, `perimeter_speed`, `temperature`, etc.) e apaga esse arquivo ao final da conversão.
@@ -112,7 +123,7 @@ Vale para suporte normal e árvore, não altera o seu perfil e não tem efeito c
 
 ### Várias peças na mesma mesa
 
-O campo **Quantidade de peças** (de 1 a 20) distribui as cópias em uma grade com 2 mm de espaçamento. O programa testa várias combinações de colunas/linhas e escolhe a que permite o **maior tamanho possível** sem passar dos 95 mm úteis; por isso, ao aumentar a quantidade, cada peça sai menor automaticamente. A prévia mostra o conjunto (`Conjunto 2x2: ...`) e o tamanho individual (`Cada peça: ...`). Se o total de triângulos passar de 2.000.000, a conversão é recusada com uma mensagem explicando como reduzir a quantidade.
+O campo **Quantidade de peças** (de 1 a 20) distribui as cópias em uma grade com 2 mm de espaçamento. O programa testa várias combinações de colunas/linhas e escolhe a que permite o **maior tamanho possível** sem passar dos 95 mm úteis; por isso, ao aumentar a quantidade, cada peça sai menor automaticamente. A prévia mostra o conjunto (`Conjunto 2x2: ...`) e o tamanho individual (`Cada peça: ...`). Se o total de triângulos passar de 2.000.000, a conversão é recusada com uma mensagem explicando como reduzir a quantidade — a menos que você tenha ativado **Simplificar automaticamente acima de 2.000.000 triângulos** na aba **Ajustes de impressão**. Nesse caso a malha é reduzida até o limite e a prévia/log mostram quantos triângulos foram removidos e se a perda de detalhes pode ser perceptível.
 
 ### Aba Calc — quanto cobrar pela impressão
 
@@ -168,7 +179,7 @@ Depois de uma falha ao gerar G-code de um `.3mf` (fatiador preso esperando uma j
 |---|---|
 | `subprocess.run` sem timeout: se o fatiador abrisse um diálogo modal ou ficasse preso, a thread esperava para sempre | Execução com `Popen` + `communicate` em fatias de 0,25 s, **prazo de 5 min** e `kill()` automático ao estourar o tempo |
 | Saída do fatiador sem limite podia encher a RAM (milhares de linhas de log) | Saída limitada às últimas 200 linhas |
-| Arquivos gigantes/malhas com milhões de triângulos esgotavam CPU e memória ao carregar | Limite de **200 MB** por arquivo e **2.000.000** de triângulos, recusados antes do processamento (a contagem já inclui todas as cópias pedidas) |
+| Arquivos gigantes/malhas com milhões de triângulos esgotavam CPU e memória ao carregar | Limite de **200 MB** por arquivo e **2.000.000** de triângulos (a contagem já inclui todas as cópias pedidas). Acima disso, a conversão é recusada antes do processamento, a menos que a **simplificação automática** esteja ativada — nela a malha é decimada até o limite com aviso de perda de qualidade |
 | Muitas cópias podiam gerar uma malha enorme ou pedidos absurdos | Quantidade limitada a **20 peças**, com aviso e redução automática; o escalonamento é escolhido para caber na mesa |
 | Fila de mensagens da interface crescia sem fim e travava o tkinter | Fila limitada a 500 itens (descarta os mais antigos), no máximo 150 itens processados por ciclo e log visual limitado a 500 linhas |
 | Diálogos de erro abertos **dentro** do loop da fila bloqueavam a janela | Avisos são enfileirados e exibidos no máximo um por ciclo, fora do loop |
@@ -191,6 +202,9 @@ from converter_k7 import converter_3mf_para_k7, converter_stl_para_k7
 
 converter_3mf_para_k7("peca.3mf", 60)
 converter_stl_para_k7("modelo.stl", 60)  # mesmo pipeline
+
+# Reduz malhas acima de 2.000.000 triângulos em vez de recusá-las
+converter_3mf_para_k7("peca.3mf", 60, quantidade=2, simplificar_pesado=True)
 ```
 
 ## Testes
@@ -212,13 +226,13 @@ Os testes substituem a execução do fatiador (`_executar_slicer`) por uma funç
 Com o venv ativado (ou chamando o Python dele), execute na pasta do projeto:
 
 ```powershell
-.\.venv\Scripts\python.exe -m PyInstaller --noconfirm --onefile --windowed --name ConversorK7 --icon icon.ico --add-data "k7_config.ini;." --collect-all trimesh --collect-all ttkbootstrap --collect-all networkx --hidden-import=lxml app.py
+.\.venv\Scripts\python.exe -m PyInstaller --noconfirm --onefile --windowed --name ConversorK7 --icon icon.ico --add-data "k7_config.ini;." --collect-all trimesh --collect-all fast_simplification --collect-all ttkbootstrap --collect-all networkx --hidden-import=lxml app.py
 ```
 
 Para forçar uma reconstrução completa (limpa o cache do PyInstaller):
 
 ```powershell
-.\.venv\Scripts\python.exe -m PyInstaller --noconfirm --onefile --windowed --clean --name ConversorK7 --icon icon.ico --add-data "k7_config.ini;." --collect-all trimesh --collect-all ttkbootstrap --collect-all networkx --hidden-import=lxml app.py
+.\.venv\Scripts\python.exe -m PyInstaller --noconfirm --onefile --windowed --clean --name ConversorK7 --icon icon.ico --add-data "k7_config.ini;." --collect-all trimesh --collect-all fast_simplification --collect-all ttkbootstrap --collect-all networkx --hidden-import=lxml app.py
 ```
 
 Se der `PermissionError: [WinError 5]`, é porque uma instância antiga está usando o arquivo. Feche o programa (ou encerre o processo) e rode o comando novamente:
