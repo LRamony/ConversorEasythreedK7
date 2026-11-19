@@ -50,7 +50,7 @@ Na aba **Converter**:
 4. Opcionalmente escolha a **pasta de saída** (em branco = mesma pasta do modelo). O nome gerado é `<nome>_K7.gcode`;
 5. Clique em **Converter para G-code**.
 
-O **último tamanho máximo escolhido**, a quantidade de peças, os **ajustes de impressão** e o **diâmetro do suporte** voltam como padrão na próxima execução. Os ajustes de impressão são salvos imediatamente quando você altera um campo; os demais são salvos ao converter ou fechar. O botão **Reset** da aba **Ajustes de impressão** restaura preenchimento, velocidades e temperaturas ao padrão. O **Reset** ao lado do campo de suporte restaura apenas o suporte (opção desligada e `0,9 mm` de diâmetro).
+O **último tamanho máximo escolhido**, a quantidade de peças, os **ajustes de impressão** e o **diâmetro do suporte** voltam como padrão na próxima execução. Os ajustes de impressão são salvos imediatamente quando você altera um campo; os demais são salvos ao converter ou fechar. O botão **Reset** da aba **Ajustes de impressão** restaura preenchimento, velocidades, temperaturas e aderência à mesa ao padrão. O **Reset** ao lado do campo de suporte restaura apenas o suporte (opção desligada e `0,9 mm` de diâmetro).
 
 ### Ajustes de impressão
 
@@ -68,6 +68,19 @@ A barra deslizante e as siglas foram removidas. As opções ficam diretamente na
 | Temperatura da mesa na 1ª camada | `first_layer_bed_temperature` | `0` a `80 °C` | Ajuda na aderência da primeira camada. Mantenha `0 °C` sem mesa aquecida. |
 
 Os campos começam com os valores do `k7_config.ini` escolhido e o que você alterar tem prioridade na próxima execução. Cada alteração é salva na hora, e o botão **Reset** à direita do texto “ao final da conversão” restaura todos os campos aos valores padrão. Qualquer valor digitado abaixo do mínimo ou acima do máximo é automaticamente limitado ao intervalo. Assim como o suporte, nada é gravado no seu perfil: os valores são aplicados em um `.ini` temporário que é apagado ao final da conversão.
+
+### Aderência à mesa de impressão
+
+Na aba **Ajustes de impressão**, o seletor **Aderência à mesa de impressão** oferece `None`, `Skirt`, `Brim` e `Raft`. O padrão é `Skirt`, o mesmo do PrusaSlicer; a escolha é salva imediatamente e também volta ao padrão pelo botão **Reset**.
+
+| Opção | Chaves aplicadas no `.ini` temporário | Efeito |
+| --- | --- | --- |
+| `None` | `skirts = 0`, `brim_width = 0`, `raft_layers = 0` | Sem contorno ou base extra. |
+| `Skirt` | `skirts = 1`, `brim_width = 0`, `raft_layers = 0` | Uma volta ao redor da peça para iniciar o fluxo. |
+| `Brim` | `skirts = 0`, `brim_width = 6`, `brim_type = outer_only`, `raft_layers = 0` | Borda de `6 mm` na primeira camada, aumentando a fixação. |
+| `Raft` | `skirts = 0`, `brim_width = 0`, `raft_layers = 2` | Base sob a peça; mais firme, porém gasta mais material e tempo. |
+
+Assim como os demais ajustes, nada é gravado no seu perfil: as chaves são aplicadas somente no `.ini` temporário e apagadas ao final da conversão.
 
 ### Tipo de suporte
 

@@ -40,6 +40,8 @@ from calculo import (
     extrair_dados_gcode,
 )
 from converter_k7 import (
+    ADERENCIA_MESA_OPCOES,
+    ADERENCIA_MESA_PADRAO,
     ALTURA_MESA_MM,
     CONFIG_PADRAO,
     LARGURA_MESA_MM,
@@ -218,6 +220,7 @@ class AppK7(ttk.Window):
             chave: tk.IntVar(value=padrao)
             for chave, (_minimo, _maximo, padrao) in LIMITES_IMPRESSAO.items()
         }
+        self.var_aderencia = tk.StringVar(value=ADERENCIA_MESA_PADRAO)
         self.var_quantidade = tk.IntVar(value=1)
         self.var_suporte_fino = tk.BooleanVar(value=False)
         self.var_suporte_fino_mm = tk.DoubleVar(value=SUPORTE_FINO_PADRAO_MM)
@@ -247,6 +250,7 @@ class AppK7(ttk.Window):
         # Ajustes de impressão são persistidos assim que o valor muda.
         for variavel in self.vars_impressao.values():
             variavel.trace_add("write", lambda *_: self._salvar_config())
+        self.var_aderencia.trace_add("write", lambda *_: self._salvar_config())
 
         # Qualquer alteração nos valores recalcula automaticamente.
         for variavel in (
@@ -333,6 +337,7 @@ class AppK7(ttk.Window):
                 chave: self._valor_impressao(chave)
                 for chave in LIMITES_IMPRESSAO
             },
+            "aderencia_mesa": self.var_aderencia.get(),
             "margem": self.var_margem.get(),
             "tempo_calculo": self.var_tempo_calculo.get(),
             "gcode_calculo": self.var_gcode_calculo.get().strip(),
@@ -369,6 +374,11 @@ class AppK7(ttk.Window):
             except (KeyError, TypeError, ValueError, tk.TclError):
                 valor = valores_perfil[chave]
             variavel.set(limitar_impressao(chave, valor))
+
+        aderencia = str(self.config_salva.get("aderencia_mesa", ""))
+        self.var_aderencia.set(
+            aderencia if aderencia in ADERENCIA_MESA_OPCOES else ADERENCIA_MESA_PADRAO
+        )
 
         suporte = str(self.config_salva.get("suporte", ""))
         self.var_suporte.set(suporte if suporte in TIPOS_SUPORTE else SUPORTE_PADRAO)
@@ -715,6 +725,30 @@ class AppK7(ttk.Window):
         )
         self.btn_reset_impressao.grid(row=0, column=1, sticky="e", padx=(12, 0))
 
+        cartao_aderencia = self._cartao(pai, "Aderência à mesa de impressão")
+        linha_aderencia = ttk.Frame(cartao_aderencia)
+        linha_aderencia.pack(fill="x")
+        ttk.Label(
+            linha_aderencia, text="Tipo:", font=("Segoe UI", 10, "bold")
+        ).grid(row=0, column=0, sticky="w")
+        self.cmb_aderencia = ttk.Combobox(
+            linha_aderencia,
+            textvariable=self.var_aderencia,
+            values=list(ADERENCIA_MESA_OPCOES),
+            state="readonly",
+            width=18,
+        )
+        self.cmb_aderencia.grid(row=0, column=1, sticky="w", padx=(8, 0))
+        ttk.Label(
+            cartao_aderencia,
+            text="None: sem contorno extra. Skirt: uma volta ao redor da peça para "
+            "iniciar o fluxo. Brim: borda na primeira camada, com mais fixação. "
+            "Raft: base sob a peça, a opção mais firme e que consome mais material e tempo.",
+            bootstyle="secondary",
+            wraplength=840,
+            justify="left",
+        ).pack(anchor="w", pady=(8, 0))
+
         detalhes = {chave: (titulo, unidade, texto) for chave, titulo, unidade, texto in CAMPOS_IMPRESSAO}
         for titulo_grupo, chaves in GRUPOS_IMPRESSAO:
             cartao = self._cartao(pai, titulo_grupo)
@@ -949,11 +983,16 @@ class AppK7(ttk.Window):
         variavel.set(limitar_impressao(chave, valor))
 
     def _reset_impressao(self) -> None:
-        """Restaura preenchimento, velocidades e temperaturas ao padrão."""
+        """Restaura preenchimento, velocidades, temperaturas e aderência."""
         for chave, (_minimo, _maximo, padrao) in LIMITES_IMPRESSAO.items():
             self.vars_impressao[chave].set(padrao)
+        self.var_aderencia.set(ADERENCIA_MESA_PADRAO)
         self._salvar_config()
         self.var_status.set("Ajustes de impressão restaurados ao padrão.")
+
+    def _aderencia_mesa(self) -> str:
+        valor = self.var_aderencia.get()
+        return valor if valor in ADERENCIA_MESA_OPCOES else ADERENCIA_MESA_PADRAO
 
     def _config_impressao(self) -> dict[str, int]:
         """Valida todos os ajustes de impressão antes de enviá-los ao fatiador."""
@@ -1413,6 +1452,7 @@ class AppK7(ttk.Window):
                 self.var_suporte_fino.get(),
                 self._diametro_suporte_fino(),
                 self._config_impressao(),
+                self._aderencia_mesa(),
             ),
             daemon=True,
         ).start()
@@ -1437,6 +1477,7 @@ class AppK7(ttk.Window):
         suporte_fino: bool,
         suporte_fino_mm: float,
         config_impressao: dict[str, int],
+        aderencia_mesa: str,
     ) -> None:
         try:
             resultado = converter_3mf_para_k7(
@@ -1452,6 +1493,7 @@ class AppK7(ttk.Window):
                 suporte_fino=suporte_fino,
                 suporte_fino_mm=suporte_fino_mm,
                 config_impressao=config_impressao,
+                aderencia_mesa=aderencia_mesa,
             )
         except Exception as exc:
             self._enfileirar(("erro", str(exc)))

@@ -364,6 +364,20 @@ def testar_ajustes_impressao(diretorio: Path) -> None:
     assert parametros["travel_speed"] == "90"
     assert parametros["temperature"] == "210"
 
+    assert conv.ADERENCIA_MESA_OPCOES == ("None", "Skirt", "Brim", "Raft")
+    assert conv.validar_aderencia_mesa("Raft") == "Raft"
+    assert conv.validar_aderencia_mesa("inexistente") == conv.ADERENCIA_MESA_PADRAO
+    assert conv.parametros_aderencia_mesa("None") == {
+        "skirts": "0",
+        "brim_width": "0",
+        "brim_type": "no_brim",
+        "raft_layers": "0",
+    }
+    brim = conv.parametros_aderencia_mesa("Brim")
+    assert brim["brim_width"] == "6" and brim["brim_type"] == "outer_only"
+    raft = conv.parametros_aderencia_mesa("Raft")
+    assert int(raft["raft_layers"]) > 0 and raft["skirts"] == "0"
+
     destino_ini = diretorio / "temporario_ajustes.ini"
     conv._gravar_ini_com_suporte(perfil, parametros, destino_ini)
     texto = destino_ini.read_text(encoding="utf-8")
@@ -391,11 +405,15 @@ def testar_ajustes_impressao(diretorio: Path) -> None:
             config_ini=perfil,
             tipo_suporte="Sem suporte",
             config_impressao=valores,
+            aderencia_mesa="Brim",
         )
     assert any("fill_density = 40%" in trecho for trecho in vistos)
     assert any("support_material = 0" in trecho for trecho in vistos)
+    assert any("brim_width = 6" in trecho for trecho in vistos)
+    assert any("brim_type = outer_only" in trecho for trecho in vistos)
+    assert any("skirts = 0" in trecho for trecho in vistos)
     assert not list(diretorio.glob("k7_suporte_*.ini")), "ini temporário não removido"
-    print("  [ok] ajustes rapidos limitados e aplicados no perfil temporario")
+    print("  [ok] ajustes rapidos e aderencia aplicados no perfil temporario")
 
 
 def testar_quantidade(diretorio: Path) -> None:
@@ -635,6 +653,12 @@ def testar_gui() -> None:
                     pass
             assert "Ajustar diâmetro do suporte" in textos_visiveis
             assert "Suportes mais finos" not in textos_visiveis
+            assert any(
+                texto.strip() == "Aderência à mesa de impressão"
+                for texto in textos_visiveis
+            )
+            assert tuple(janela.cmb_aderencia.cget("values")) == conv.ADERENCIA_MESA_OPCOES
+            assert janela.var_aderencia.get() == conv.ADERENCIA_MESA_PADRAO
             titulos = {
                 titulo for _chave, titulo, _unidade, _texto in app_modulo.CAMPOS_IMPRESSAO
             }
@@ -649,19 +673,24 @@ def testar_gui() -> None:
 
             # Alterar um ajuste salva na hora; Reset volta ao padrão e salva.
             janela.vars_impressao["fill_density"].set(55)
+            janela.var_aderencia.set("Raft")
             janela.update()
             dados = json.loads(arquivo_prefs.read_text(encoding="utf-8"))
             assert dados["fill_density"] == 55
+            assert dados["aderencia_mesa"] == "Raft"
+            assert janela._aderencia_mesa() == "Raft"
 
             janela.btn_reset_impressao.invoke()
             janela.update()
             for chave, (_minimo, _maximo, padrao) in conv.LIMITES_IMPRESSAO.items():
                 assert janela.vars_impressao[chave].get() == padrao
+            assert janela.var_aderencia.get() == conv.ADERENCIA_MESA_PADRAO
             dados = json.loads(arquivo_prefs.read_text(encoding="utf-8"))
             assert all(
                 dados[chave] == padrao
                 for chave, (_minimo, _maximo, padrao) in conv.LIMITES_IMPRESSAO.items()
             )
+            assert dados["aderencia_mesa"] == conv.ADERENCIA_MESA_PADRAO
 
             # Sem resultado, o botão de copiar não está gerenciado pelo grid.
             assert janela.btn_copiar_orcamento.winfo_manager() == ""
@@ -806,7 +835,7 @@ def testar_gui() -> None:
             janela3.destroy()
     print("  [ok] interface ttkbootstrap constroi e fecha sem erros")
     print("  [ok] abas Configuracoes/Calc/Ajustes, diametro do suporte, Reset e documentacao presentes")
-    print("  [ok] slider removido; ajustes rapidos limitados e salvos como padrao")
+    print("  [ok] slider removido; ajustes, aderencia e limites salvos como padrao")
 
 
 def main() -> None:

@@ -140,6 +140,38 @@ LIMITES_IMPRESSAO: dict[str, tuple[int, int, int]] = {
     "first_layer_bed_temperature": (0, 80, 0),
 }
 
+# Aderência à mesa de impressão. O padrão acompanha o PrusaSlicer (uma volta
+# de skirt). Cada opção sobrescreve apenas as chaves relacionadas no .ini
+# temporário, sem tocar no perfil do usuário.
+ADERENCIA_MESA_OPCOES: tuple[str, ...] = ("None", "Skirt", "Brim", "Raft")
+ADERENCIA_MESA_PADRAO = "Skirt"
+_PARAMETROS_ADERENCIA_MESA: dict[str, dict[str, str]] = {
+    "None": {
+        "skirts": "0",
+        "brim_width": "0",
+        "brim_type": "no_brim",
+        "raft_layers": "0",
+    },
+    "Skirt": {
+        "skirts": "1",
+        "brim_width": "0",
+        "brim_type": "no_brim",
+        "raft_layers": "0",
+    },
+    "Brim": {
+        "skirts": "0",
+        "brim_width": "6",
+        "brim_type": "outer_only",
+        "raft_layers": "0",
+    },
+    "Raft": {
+        "skirts": "0",
+        "brim_width": "0",
+        "brim_type": "no_brim",
+        "raft_layers": "2",
+    },
+}
+
 # Aplicado somente quando "Ajustar diâmetro do suporte" está ligado e o tipo
 # escolhido realmente gera suporte. O valor informado na interface é o
 # DIÂMETRO DO RAMO/ÁRVORE, não a largura de extrusão.
@@ -283,6 +315,21 @@ def parametros_config_impressao(
         numero = limitar_impressao(chave, valores.get(chave, padrao), log)
         resultado[chave] = f"{numero}%" if chave == "fill_density" else str(numero)
     return resultado
+
+
+def validar_aderencia_mesa(valor: str, log: LogFn = _sem_log) -> str:
+    """Normaliza a aderência escolhida, usando o padrão se for desconhecida."""
+    nome = str(valor).strip()
+    if nome in _PARAMETROS_ADERENCIA_MESA:
+        return nome
+    log("warn", f"Aderência à mesa '{valor}' desconhecida; usando {ADERENCIA_MESA_PADRAO}.")
+    return ADERENCIA_MESA_PADRAO
+
+
+def parametros_aderencia_mesa(valor: str, log: LogFn = _sem_log) -> dict[str, str]:
+    """Chaves do PrusaSlicer para None, Skirt, Brim ou Raft."""
+    nome = validar_aderencia_mesa(valor, log)
+    return dict(_PARAMETROS_ADERENCIA_MESA[nome])
 
 
 @dataclass(frozen=True)
@@ -642,6 +689,7 @@ def converter_3mf_para_k7(
     suporte_fino: bool = False,
     suporte_fino_mm: float = SUPORTE_FINO_PADRAO_MM,
     config_impressao: dict[str, float] | None = None,
+    aderencia_mesa: str | None = None,
 ) -> ResultadoConversao:
     """Redimensiona, centraliza e fatia o arquivo para a Easythreed K7."""
     caminho = Path(arquivo_3mf).expanduser()
@@ -702,6 +750,9 @@ def converter_3mf_para_k7(
     if config_impressao:
         parametros.update(parametros_config_impressao(config_impressao, log))
 
+    if aderencia_mesa is not None:
+        parametros.update(parametros_aderencia_mesa(aderencia_mesa, log))
+
     if parametros:
         descritor_ini, nome_ini = tempfile.mkstemp(
             prefix="k7_suporte_", suffix=".ini", dir=str(config.parent)
@@ -726,6 +777,12 @@ def converter_3mf_para_k7(
                 f"{chave}={parametros[chave]}" for chave in LIMITES_IMPRESSAO
             )
             log("info", f"Ajustes de impressão no perfil temporário: {resumo}")
+        if aderencia_mesa is not None:
+            log(
+                "info",
+                f"Aderência à mesa no perfil temporário: "
+                f"{validar_aderencia_mesa(aderencia_mesa, log)}",
+            )
 
     descritor, stl_temporario = tempfile.mkstemp(
         prefix="k7_", suffix=".stl", dir=str(destino.parent)
