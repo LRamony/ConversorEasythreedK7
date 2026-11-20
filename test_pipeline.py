@@ -867,6 +867,53 @@ def testar_gui() -> None:
                 texto = janela.lbl_orcamento.cget("text")
                 assert "\n\n" not in texto, repr(texto)
 
+                # Trocar o G-code digitando no campo recalcula sozinho, sem
+                # precisar clicar em "Procurar...".
+                outro = Path(temporario) / "outro_K7.gcode"
+                outro.write_text(
+                    "; filament used [mm] = 2000.0\n"
+                    "; filament used [g] = 6.0\n"
+                    "; estimated printing time (normal mode) = 1h 0m 0s\n",
+                    encoding="utf-8",
+                )
+                janela.var_gcode_calculo.set(str(outro))
+                for _tentativa in range(60):
+                    janela.update()
+                    time.sleep(0.01)
+                    if janela.orcamento and "outro_K7.gcode" in janela.lbl_orcamento.cget("text"):
+                        break
+                assert "outro_K7.gcode" in janela.lbl_orcamento.cget("text")
+                assert abs(janela.orcamento.dados.horas - 1.0) < 1e-6
+                assert janela._tempo_manual is False
+
+                preco_anterior = janela.orcamento.preco_final
+                janela.var_margem.set(60.0)
+                for _tentativa in range(60):
+                    janela.update()
+                    time.sleep(0.01)
+                    if janela.orcamento and janela.orcamento.preco_final != preco_anterior:
+                        break
+                assert janela.orcamento.preco_final > preco_anterior
+
+                custo_anterior = janela.orcamento.custo_total
+                janela.var_custo_kg.set(300.0)
+                for _tentativa in range(60):
+                    janela.update()
+                    time.sleep(0.01)
+                    if janela.orcamento and janela.orcamento.custo_total != custo_anterior:
+                        break
+                assert janela.orcamento.custo_total > custo_anterior
+
+                # Um caminho inválido limpa o resultado em vez de manter um
+                # orçamento antigo que parece não responder às mudanças.
+                janela.var_gcode_calculo.set(str(Path(temporario) / "inexistente.gcode"))
+                for _tentativa in range(60):
+                    janela.update()
+                    time.sleep(0.01)
+                    if janela.orcamento is None:
+                        break
+                assert janela.orcamento is None
+
                 # Ao limpar o resultado, o botão desaparece junto.
                 janela._limpar_orcamento()
                 assert janela.btn_copiar_orcamento.winfo_manager() == ""

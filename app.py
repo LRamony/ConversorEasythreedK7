@@ -215,6 +215,7 @@ class AppK7(ttk.Window):
         self._job_fila: str | None = None
         self._calculando = False
         self._tempo_manual = False
+        self._sincronizando_tempo = False
 
         self.var_arquivo = tk.StringVar(value="")
         self.var_tamanho = tk.DoubleVar(value=60.0)
@@ -260,6 +261,7 @@ class AppK7(ttk.Window):
         self._atualizar_resumo_limites()
 
         # Qualquer alteração nos valores recalcula automaticamente.
+        self.var_gcode_calculo.trace_add("write", self._ao_mudar_gcode)
         for variavel in (
             self.var_margem,
             self.var_custo_kg,
@@ -889,8 +891,12 @@ class AppK7(ttk.Window):
         cartao_entrada = self._cartao(pai, "1. G-code e margem de lucro")
         cartao_entrada.columnconfigure(1, weight=1)
         ttk.Label(cartao_entrada, text="G-code:").grid(row=0, column=0, sticky="w")
-        ttk.Entry(cartao_entrada, textvariable=self.var_gcode_calculo).grid(
-            row=0, column=1, sticky="ew"
+        entrada_gcode = ttk.Entry(cartao_entrada, textvariable=self.var_gcode_calculo)
+        entrada_gcode.grid(row=0, column=1, sticky="ew")
+        # Digitar o caminho (ou colar) já dispara o cálculo pelo trace da
+        # variável; Enter apenas antecipa o resultado.
+        entrada_gcode.bind(
+            "<Return>", lambda _evento: self._calcular_orcamento()
         )
         ttk.Button(
             cartao_entrada,
@@ -1231,9 +1237,16 @@ class AppK7(ttk.Window):
     # ------------------------------------------------------------------
     def _ao_mudar_tempo(self, *_args) -> None:
         """Tempo digitado pelo usuário tem prioridade sobre o do G-code."""
-        if self._calculando:
+        if self._calculando or self._sincronizando_tempo:
             return
         self._tempo_manual = True
+        self._ao_mudar_calculo()
+
+    def _ao_mudar_gcode(self, *_args) -> None:
+        """Trocar o G-code recalcula e volta a usar o tempo lido do arquivo."""
+        if self._calculando:
+            return
+        self._tempo_manual = False
         self._ao_mudar_calculo()
 
     def _ao_mudar_calculo(self, *_args) -> None:
@@ -1250,8 +1263,12 @@ class AppK7(ttk.Window):
     def _recalcular_se_possivel(self) -> None:
         self._job_calculo = None
         caminho = self.var_gcode_calculo.get().strip().strip('"')
-        if caminho and Path(caminho).is_file():
-            self._calcular_orcamento(caminho)
+        if not caminho or not Path(caminho).is_file():
+            # O campo foi esvaziado ou aponta para um arquivo que não existe
+            # mais. Sem isso, mudar margem/custos parecia não fazer nada.
+            self._limpar_orcamento()
+            return
+        self._calcular_orcamento(caminho)
 
     def _escolher_gcode_calculo(self) -> None:
         atual = self.var_gcode_calculo.get().strip().strip('"')
@@ -1264,8 +1281,9 @@ class AppK7(ttk.Window):
         )
         if arquivo:
             self._tempo_manual = False
+            # O trace de var_gcode_calculo agenda o cálculo; um after aqui
+            # faria o mesmo arquivo ser lido duas vezes.
             self.var_gcode_calculo.set(arquivo)
-            self.after(50, self._calcular_orcamento)
 
     def _custos_atuais(self) -> Custos:
         def valor(variavel: tk.DoubleVar, padrao: float) -> float:
@@ -1313,7 +1331,12 @@ class AppK7(ttk.Window):
                 # O usuário digitou um valor: ele vale mais que o do G-code.
                 dados = replace(dados, horas=horas_padrao, tempo_encontrado=False)
             elif dados.tempo_encontrado:
-                self.var_tempo_calculo.set(round(dados.horas, 4))
+                # Sincronizar o campo não pode marcar o tempo como manual.
+                self._sincronizando_tempo = True
+                try:
+                    self.var_tempo_calculo.set(round(dados.horas, 4))
+                finally:
+                    self._sincronizando_tempo = False
             else:
                 self._escrever_log(
                     "warn",
@@ -1322,6 +1345,12 @@ class AppK7(ttk.Window):
                 )
             margem = float(self.var_margem.get())
             orcamento = calcular_orcamento(dados, margem, self._custos_atuais())
+            # Normaliza o caminho exibido, mas sem disparar um novo cálculo:
+            # o trace de var_gcode_calculo já está ativo e `_calculando` ainda
+            # é True neste ponto.
+            caminho_normalizado = str(dados.arquivo)
+            if self.var_gcode_calculo.get().strip().strip('"') != caminho_normalizado:
+                self.var_gcode_calculo.set(caminho_normalizado)
         except (ErroCalculo, ValueError, TypeError, tk.TclError) as exc:
             self._limpar_orcamento()
             self._escrever_log("warn", f"Calc: {exc}")
@@ -1331,7 +1360,6 @@ class AppK7(ttk.Window):
             self._calculando = False
 
         self.orcamento = orcamento
-        self.var_gcode_calculo.set(str(dados.arquivo))
         self._mostrar_orcamento(orcamento)
         self._escrever_log(
             "success", f"Calc: preço final {self._fmt_reais(orcamento.preco_final)}"
