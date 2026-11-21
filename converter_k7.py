@@ -34,6 +34,13 @@ ALTURA_MESA_MM = 100.0
 # fatiador eram as principais causas de consumo de RAM/CPU sem controle.
 TAMANHO_MAXIMO_ARQUIVO_MB = 200
 MAX_FACES = 2_000_000
+
+
+def fmt_faces(valor: int) -> str:
+    """Mostra contagem de triângulos com separador de milhar brasileiro."""
+    return f"{valor:,}".replace(",", ".")
+
+
 # Redução a partir da qual o aviso de perda de qualidade é mais explícito.
 REDUCAO_QUALIDADE_PERCENTUAL = 20.0
 MAX_LINHAS_LOG = 200
@@ -631,7 +638,7 @@ def _simplificar_ate_limite(
         alvo = max(1, int(alvo * (MAX_FACES / faces_finais) * 0.95))
     else:
         raise ErroConversao(
-            f"Não foi possível reduzir a malha a {MAX_FACES:,} triângulos. "
+            f"Não foi possível reduzir a malha a {fmt_faces(MAX_FACES)} triângulos. "
             "Reduza a quantidade ou simplifique o modelo antes de converter."
         )
 
@@ -685,7 +692,7 @@ def _carregar_e_preparar(
         if total_faces > MAX_FACES and not simplificar_pesado:
             raise ErroConversao(
                 f"Modelo com {total_faces:,} triângulos é pesado demais "
-                f"(limite: {MAX_FACES:,}). Simplifique o modelo antes de converter "
+                f"(limite: {fmt_faces(MAX_FACES)}). Simplifique o modelo antes de converter "
                 "ou ative a simplificação automática na aba Ajustes de impressão."
             )
         malha = cena.dump(concatenate=True)
@@ -694,7 +701,7 @@ def _carregar_e_preparar(
         if len(cena.faces) > MAX_FACES and not simplificar_pesado:
             raise ErroConversao(
                 f"Modelo com {len(cena.faces):,} triângulos é pesado demais "
-                f"(limite: {MAX_FACES:,}). Simplifique o modelo antes de converter "
+                f"(limite: {fmt_faces(MAX_FACES)}). Simplifique o modelo antes de converter "
                 "ou ative a simplificação automática na aba Ajustes de impressão."
             )
         malha = cena
@@ -713,7 +720,7 @@ def _carregar_e_preparar(
         if not simplificar_pesado:
             raise ErroConversao(
                 f"{quantidade} cópia(s) somam {faces_originais:,} triângulos e passam do "
-                f"limite de {MAX_FACES:,}. Reduza a quantidade, simplifique o modelo "
+                f"limite de {fmt_faces(MAX_FACES)}. Reduza a quantidade, simplifique o modelo "
                 "ou ative a simplificação automática na aba Ajustes de impressão."
             )
         malha = _simplificar_ate_limite(malha, quantidade, faces_originais, log)
@@ -771,7 +778,7 @@ def _carregar_e_preparar(
     log(
         "info",
         f"Triângulos enviados ao fatiador: {faces_finais:,} "
-        f"(limite: {MAX_FACES:,}, contando as cópias)",
+        f"(limite: {fmt_faces(MAX_FACES)}, contando as cópias)",
     )
     if quantidade > 1:
         log(

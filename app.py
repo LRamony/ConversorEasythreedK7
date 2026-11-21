@@ -56,6 +56,7 @@ from converter_k7 import (
     REDUCAO_QUALIDADE_PERCENTUAL,
     VALORES_PADRAO_IMPRESSAO,
     EXTRUSAO_SUPORTE_MAX_MM,
+    fmt_faces,
     QUANTIDADE_MAXIMA,
     SUPORTE_FINO_MAX_MM,
     SUPORTE_FINO_MIN_MM,
@@ -986,7 +987,7 @@ class AppK7(ttk.Window):
         cartao_simplificacao = self._cartao(pai, "Simplificação de modelos pesados")
         ttk.Checkbutton(
             cartao_simplificacao,
-            text=f"Simplificar automaticamente acima de {MAX_FACES:,} triângulos",
+            text=f"Simplificar automaticamente acima de {fmt_faces(MAX_FACES)} triângulos",
             variable=self.var_simplificar_pesado,
             bootstyle="success",
         ).pack(anchor="w")
@@ -1433,7 +1434,7 @@ class AppK7(ttk.Window):
             f"largura {mm('top_infill_extrusion_width')} mm\n"
             f"1ª camada: largura {mm('first_layer_extrusion_width')} mm  |  "
             f"velocidade {valor('first_layer_speed')} mm/s\n"
-            f"Triângulos: limite de {MAX_FACES:,} no total  |  "
+            f"Triângulos: limite de {fmt_faces(MAX_FACES)} no total  |  "
             f"Aderência: {self._aderencia_mesa()}  |  "
             f"Simplificação automática: "
             f"{'ativada' if self.var_simplificar_pesado.get() else 'desativada'}  |  "
@@ -1875,7 +1876,7 @@ class AppK7(ttk.Window):
         else:
             self.lbl_triangulos.configure(
                 text=f"Triângulos: {analise.faces_finais:,} de "
-                f"{MAX_FACES:,} permitidos.",
+                f"{fmt_faces(MAX_FACES)} permitidos.",
                 bootstyle="secondary",
             )
 
