@@ -167,16 +167,29 @@ CAMPOS_DECIMAIS_IMPRESSAO: frozenset[str] = frozenset(
 # forçar números onde a interface usa checkbox/combobox.
 IMPRESSAO_BOOL: tuple[str, ...] = ("ironing",)
 OPCOES_IMPRESSAO: dict[str, tuple[str, ...]] = {
+    "ironing_type": (
+        "Todas as superfícies superiores",
+        "Apenas superfícies superiores",
+    ),
     "top_fill_pattern": ("Retilíneo", "Monotônico", "Linhas monotônicas"),
 }
 
 # A GUI mostra nomes em português; o .ini do PrusaSlicer usa estes valores.
-_PADRAO_TOPO_PRUSA: dict[str, str] = {
-    "Retilíneo": "rectilinear",
-    "Monotônico": "monotonic",
-    "Linhas monotônicas": "monotoniclines",
+_VALORES_PRUSA_IMPRESSAO: dict[str, dict[str, str]] = {
+    "ironing_type": {
+        "Todas as superfícies superiores": "top",
+        "Apenas superfícies superiores": "topmost",
+    },
+    "top_fill_pattern": {
+        "Retilíneo": "rectilinear",
+        "Monotônico": "monotonic",
+        "Linhas monotônicas": "monotoniclines",
+    },
 }
-_TOPO_PRUSA_PARA_GUI = {valor: chave for chave, valor in _PADRAO_TOPO_PRUSA.items()}
+_PRUSA_PARA_GUI_IMPRESSAO: dict[str, dict[str, str]] = {
+    chave: {valor: nome for nome, valor in pares.items()}
+    for chave, pares in _VALORES_PRUSA_IMPRESSAO.items()
+}
 
 VALORES_PADRAO_IMPRESSAO: dict[str, object] = {
     **{
@@ -184,6 +197,12 @@ VALORES_PADRAO_IMPRESSAO: dict[str, object] = {
         for chave, (_minimo, _maximo, padrao) in LIMITES_IMPRESSAO.items()
     },
     **{chave: False for chave in IMPRESSAO_BOOL},
+    **{
+        chave: opcoes[0]
+        for chave, opcoes in OPCOES_IMPRESSAO.items()
+    },
+    # O PrusaSlicer já usa Monotônico no topo; manter este padrão evita mudar
+    # o acabamento de quem já usava a versão anterior.
     "top_fill_pattern": OPCOES_IMPRESSAO["top_fill_pattern"][1],
 }
 CHAVES_IMPRESSAO: tuple[str, ...] = tuple(VALORES_PADRAO_IMPRESSAO)
@@ -366,8 +385,8 @@ def validar_opcao_impressao(
     texto = str(valor).strip()
     if texto in OPCOES_IMPRESSAO[chave]:
         return texto
-    if chave == "top_fill_pattern" and texto in _TOPO_PRUSA_PARA_GUI:
-        return _TOPO_PRUSA_PARA_GUI[texto]
+    if texto in _PRUSA_PARA_GUI_IMPRESSAO[chave]:
+        return _PRUSA_PARA_GUI_IMPRESSAO[chave][texto]
     raise ErroConversao(f"Opção inválida para {chave}: {valor!r}")
 
 
@@ -431,16 +450,13 @@ def parametros_config_impressao(
         )
         resultado[chave] = "1" if ativo else "0"
         if chave == "ironing" and ativo:
-            # "Apenas superfícies superiores" e espaçamento padrão do PrusaSlicer.
-            resultado["ironing_type"] = "topmost"
             resultado["ironing_spacing"] = "0.1"
 
-    for chave, opcoes in OPCOES_IMPRESSAO.items():
+    for chave in OPCOES_IMPRESSAO:
         escolha = validar_opcao_impressao(
             chave, valores.get(chave, VALORES_PADRAO_IMPRESSAO[chave]), log
         )
-        if chave == "top_fill_pattern":
-            resultado[chave] = _PADRAO_TOPO_PRUSA[escolha]
+        resultado[chave] = _VALORES_PRUSA_IMPRESSAO[chave][escolha]
     return resultado
 
 

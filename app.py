@@ -191,6 +191,16 @@ CAMPOS_IMPRESSAO: tuple[tuple[str, str, str, str], ...] = (
         "superfície lisa em chaveiros e peças decorativas.",
     ),
     (
+        "ironing_type",
+        "Tipo de engomagem",
+        "",
+        "Todas as superfícies superiores alisa cada topo da impressão, mesmo "
+        "quando as peças têm alturas diferentes. Apenas superfícies superiores "
+        "alisa somente a camada mais alta de toda a impressão; peças mais baixas "
+        "ficam sem esse acabamento. Só tem efeito quando Ativar engomar estiver "
+        "ligado. Padrão: Todas as superfícies superiores.",
+    ),
+    (
         "ironing_flowrate",
         "Fluxo do engomar",
         "%",
@@ -253,6 +263,7 @@ GRUPOS_IMPRESSAO: tuple[tuple[str, tuple[str, ...]], ...] = (
         "Acabamento do topo",
         (
             "ironing",
+            "ironing_type",
             "ironing_flowrate",
             "ironing_speed",
             "top_fill_pattern",
@@ -1045,7 +1056,9 @@ class AppK7(ttk.Window):
                         width=20,
                     )
                     campo.grid(row=0, column=2, sticky="e")
-                    intervalo_txt = "Escolha o padrão aplicado nas camadas superiores."
+                    intervalo_txt = (
+                        f"Padrão: {VALORES_PADRAO_IMPRESSAO[chave]}."
+                    )
                 else:
                     campo = ttk.Checkbutton(
                         linha,
@@ -1396,6 +1409,9 @@ class AppK7(ttk.Window):
         padrao_topo = validar_opcao_impressao(
             "top_fill_pattern", self._valor_impressao("top_fill_pattern")
         )
+        tipo_engomagem = validar_opcao_impressao(
+            "ironing_type", self._valor_impressao("ironing_type")
+        )
         self.var_resumo_limites.set(
             f"Mesa: {LARGURA_MESA_MM:g} x {PROFUNDIDADE_MESA_MM:g} x "
             f"{ALTURA_MESA_MM:g} mm  |  Tamanho útil: {LIMITE_SEGURANCA_MM:g} mm\n"
@@ -1410,7 +1426,7 @@ class AppK7(ttk.Window):
             f"preenchimento {valor('infill_speed')}  |  "
             f"deslocamento {valor('travel_speed')} mm/s\n"
             f"Topo: engomar {'ligado' if engomar else 'desligado'} "
-            f"(fluxo {valor('ironing_flowrate')}%, "
+            f"(tipo {tipo_engomagem}; fluxo {valor('ironing_flowrate')}%, "
             f"velocidade {valor('ironing_speed')} mm/s)  |  "
             f"padrão {padrao_topo}  |  camadas sólidas {valor('top_solid_layers')}  |  "
             f"sobreposição {valor('infill_overlap')}%  |  "

@@ -377,6 +377,7 @@ def testar_ajustes_impressao(diretorio: Path) -> None:
         "temperature = 195\n"
         "bed_temperature = 0\n"
         "ironing = 1\n"
+        "ironing_type = top\n"
         "top_fill_pattern = monotoniclines\n"
         "top_solid_layers = 5\n"
         "infill_overlap = 30%\n"
@@ -393,6 +394,7 @@ def testar_ajustes_impressao(diretorio: Path) -> None:
     assert lidos["layer_height"] == 0.12
     assert lidos["external_perimeter_speed"] == 15  # padrão da GUI, não o %
     assert lidos["ironing"] is True
+    assert lidos["ironing_type"] == "Todas as superfícies superiores"
     assert lidos["top_fill_pattern"] == "Linhas monotônicas"
     assert lidos["top_solid_layers"] == 5
     assert lidos["top_infill_extrusion_width"] == 0.38
@@ -406,6 +408,20 @@ def testar_ajustes_impressao(diretorio: Path) -> None:
     assert conv.validar_bool_impressao("ironing", "true") is True
     assert conv.validar_bool_impressao("ironing", 0) is False
     assert conv.validar_opcao_impressao("top_fill_pattern", "monotonic") == "Monotônico"
+    assert (
+        conv.validar_opcao_impressao("ironing_type", "top")
+        == "Todas as superfícies superiores"
+    )
+    assert (
+        conv.validar_opcao_impressao("ironing_type", "topmost")
+        == "Apenas superfícies superiores"
+    )
+    try:
+        conv.validar_opcao_impressao("ironing_type", "all")
+    except conv.ErroConversao:
+        pass
+    else:
+        raise AssertionError("tipo de engomagem inválido deveria ser recusado")
     try:
         conv.validar_opcao_impressao("top_fill_pattern", "grid")
     except conv.ErroConversao:
@@ -425,6 +441,7 @@ def testar_ajustes_impressao(diretorio: Path) -> None:
         "bed_temperature": 0,
         "first_layer_bed_temperature": 0,
         "ironing": True,
+        "ironing_type": "Apenas superfícies superiores",
         "ironing_flowrate": 12,
         "ironing_speed": 18,
         "top_fill_pattern": "Linhas monotônicas",
@@ -442,6 +459,12 @@ def testar_ajustes_impressao(diretorio: Path) -> None:
     assert parametros["layer_height"] == "0.12"
     assert parametros["ironing"] == "1"
     assert parametros["ironing_type"] == "topmost"
+    assert (
+        conv.parametros_config_impressao(
+            dict(valores, ironing_type="Todas as superfícies superiores")
+        )["ironing_type"]
+        == "top"
+    )
     assert parametros["ironing_flowrate"] == "12%"
     assert parametros["ironing_speed"] == "18"
     assert parametros["top_fill_pattern"] == "monotoniclines"
@@ -765,6 +788,13 @@ def testar_gui() -> None:
             assert any(
                 "Simplificar automaticamente" in texto for texto in textos_visiveis
             )
+            assert janela.vars_impressao["ironing_type"].get() == (
+                "Todas as superfícies superiores"
+            )
+            assert any(
+                "Todas as superfícies superiores alisa cada topo" in texto
+                for texto in textos_visiveis
+            )
             titulos = {
                 titulo for _chave, titulo, _unidade, _texto in app_modulo.CAMPOS_IMPRESSAO
             }
@@ -841,6 +871,7 @@ def testar_gui() -> None:
             assert exportado["fill_density"] == 55
             assert exportado["external_perimeter_speed"] == 20
             assert exportado["ironing"] is True
+            assert exportado["ironing_type"] == "Todas as superfícies superiores"
             assert exportado["ironing_flowrate"] == 12
             assert exportado["top_fill_pattern"] == "Linhas monotônicas"
             assert exportado["top_infill_extrusion_width"] == 0.35
@@ -858,7 +889,10 @@ def testar_gui() -> None:
             assert "deslocamento 60 mm/s" in resumo
             assert "Aderência: Raft" in resumo
             assert "Simplificação automática: ativada" in resumo
-            assert "Topo: engomar ligado (fluxo 12%, velocidade 18 mm/s)" in resumo
+            assert (
+                "Topo: engomar ligado (tipo Todas as superfícies superiores; "
+                "fluxo 12%, velocidade 18 mm/s)" in resumo
+            )
             assert "padrão Linhas monotônicas" in resumo
             assert "largura 0,35 mm" in resumo
             assert "1ª camada: largura 0,50 mm" in resumo
@@ -869,7 +903,7 @@ def testar_gui() -> None:
             assert parametros_gui["layer_height"] == "0.12"
             assert parametros_gui["external_perimeter_speed"] == "67%"
             assert parametros_gui["ironing"] == "1"
-            assert parametros_gui["ironing_type"] == "topmost"
+            assert parametros_gui["ironing_type"] == "top"
             assert parametros_gui["top_fill_pattern"] == "monotoniclines"
 
             janela.btn_reset_impressao.invoke()
@@ -903,6 +937,7 @@ def testar_gui() -> None:
                         "external_perimeter_speed": 18,
                         "travel_speed": 999,
                         "ironing": True,
+                        "ironing_type": "topmost",
                         "top_fill_pattern": "monotonic",
                         "ironing_speed": 99,
                         "aderencia_mesa": "Brim",
@@ -924,6 +959,9 @@ def testar_gui() -> None:
             assert janela.vars_impressao["external_perimeter_speed"].get() == 18
             assert janela.vars_impressao["travel_speed"].get() == conv.LIMITES_IMPRESSAO["travel_speed"][1]
             assert janela.vars_impressao["ironing"].get() is True
+            assert janela.vars_impressao["ironing_type"].get() == (
+                "Apenas superfícies superiores"
+            )
             assert janela.vars_impressao["top_fill_pattern"].get() == "Monotônico"
             assert janela.vars_impressao["ironing_speed"].get() == conv.LIMITES_IMPRESSAO["ironing_speed"][1]
             assert janela.var_aderencia.get() == "Brim"
@@ -939,6 +977,7 @@ def testar_gui() -> None:
             assert "Aderência: Brim" in resumo
             assert "Simplificação automática: ativada" in resumo
             assert "Topo: engomar ligado" in resumo
+            assert "tipo Apenas superfícies superiores" in resumo
             assert "padrão Monotônico" in resumo
 
             # A opção também é repassada ao núcleo na thread de conversão.
