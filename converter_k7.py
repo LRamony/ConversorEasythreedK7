@@ -130,10 +130,13 @@ TIPOS_SUPORTE: dict[str, dict[str, str]] = {
 SUPORTE_PADRAO = "Normal - Grade"
 
 # Ajustes de impressão expostos na aba "Ajustes de impressão".
-# chave: (mínimo, máximo, padrão). Todos são inteiros; preenchimento é %.
-LIMITES_IMPRESSAO: dict[str, tuple[int, int, int]] = {
+# chave: (mínimo, máximo, padrão). Velocidades em mm/s, temperaturas em °C,
+# preenchimento em % e altura de camada em mm.
+LIMITES_IMPRESSAO: dict[str, tuple[float, float, float]] = {
+    "layer_height": (0.08, 0.20, 0.20),
     "fill_density": (5, 100, 15),
     "perimeter_speed": (10, 60, 30),
+    "external_perimeter_speed": (10, 60, 15),
     "infill_speed": (10, 80, 35),
     "travel_speed": (20, 120, 60),
     "temperature": (180, 230, 195),
@@ -141,6 +144,10 @@ LIMITES_IMPRESSAO: dict[str, tuple[int, int, int]] = {
     "bed_temperature": (0, 80, 0),
     "first_layer_bed_temperature": (0, 80, 0),
 }
+
+# O PrusaSlicer guarda a velocidade da parede externa como porcentagem da
+# velocidade do perímetro. A GUI mostra mm/s e convertemos ao gravar o .ini.
+ALTURA_CAMADA_MAX_MM = LIMITES_IMPRESSAO["layer_height"][1]
 
 # Aderência à mesa de impressão. O padrão acompanha o PrusaSlicer (uma volta
 # de skirt). Cada opção sobrescreve apenas as chaves relacionadas no .ini
@@ -259,8 +266,12 @@ def parametros_suporte_fino(diametro_mm: float) -> dict[str, str]:
     }
 
 
-def limitar_impressao(chave: str, valor: float, log: LogFn = _sem_log) -> int:
-    """Aplica o limite seguro de um ajuste rápido e devolve um inteiro."""
+def limitar_impressao(chave: str, valor: float, log: LogFn = _sem_log) -> float:
+    """Aplica o limite seguro de um ajuste rápido.
+
+    Todos os ajustes são inteiros, exceto a altura da camada, que precisa de
+    casas decimais (0,08 a 0,20 mm).
+    """
     if chave not in LIMITES_IMPRESSAO:
         raise ErroConversao(f"Ajuste de impressão desconhecido: {chave}")
     try:
@@ -271,18 +282,21 @@ def limitar_impressao(chave: str, valor: float, log: LogFn = _sem_log) -> int:
         raise ErroConversao(f"Valor inválido para {chave}: {valor!r}")
 
     minimo, maximo, _padrao = LIMITES_IMPRESSAO[chave]
-    inteiro = int(round(numero))
-    limitado = min(max(inteiro, minimo), maximo)
-    if limitado != inteiro:
+    if chave == "layer_height":
+        ajustado = round(numero, 2)
+    else:
+        ajustado = int(round(numero))
+    limitado = min(max(ajustado, minimo), maximo)
+    if limitado != ajustado:
         log(
             "warn",
-            f"{chave} = {inteiro} ajustado para {limitado} "
+            f"{chave} = {ajustado} ajustado para {limitado} "
             f"(limite: {minimo} a {maximo}).",
         )
     return limitado
 
 
-def ler_parametros_impressao(config_ini: str | Path) -> dict[str, int]:
+def ler_parametros_impressao(config_ini: str | Path) -> dict[str, float]:
     """Lê os ajustes de impressão do perfil, com padrões e limites seguros."""
     valores = {
         chave: padrao for chave, (_minimo, _maximo, padrao) in LIMITES_IMPRESSAO.items()
@@ -301,6 +315,10 @@ def ler_parametros_impressao(config_ini: str | Path) -> dict[str, int]:
         chave, bruto = (parte.strip() for parte in texto.split("=", 1))
         if chave not in LIMITES_IMPRESSAO:
             continue
+        # No .ini essa chave é porcentagem do perímetro, enquanto a GUI usa
+        # mm/s. O valor da interface (ou seu padrão) é a fonte confiável.
+        if chave == "external_perimeter_speed":
+            continue
         try:
             valores[chave] = limitar_impressao(chave, bruto.rstrip("%"))
         except ErroConversao:
@@ -313,9 +331,21 @@ def parametros_config_impressao(
 ) -> dict[str, str]:
     """Converte os ajustes da GUI nas chaves correspondentes do PrusaSlicer."""
     resultado: dict[str, str] = {}
+    perimetro = limitar_impressao(
+        "perimeter_speed",
+        valores.get("perimeter_speed", LIMITES_IMPRESSAO["perimeter_speed"][2]),
+        log,
+    )
     for chave, (_minimo, _maximo, padrao) in LIMITES_IMPRESSAO.items():
         numero = limitar_impressao(chave, valores.get(chave, padrao), log)
-        resultado[chave] = f"{numero}%" if chave == "fill_density" else str(numero)
+        if chave == "fill_density":
+            resultado[chave] = f"{numero}%"
+        elif chave == "external_perimeter_speed":
+            # PrusaSlicer espera "50%" (50% da velocidade do perímetro).
+            percentual = min(100, max(1, round(numero / perimetro * 100)))
+            resultado[chave] = f"{percentual}%"
+        else:
+            resultado[chave] = str(numero)
     return resultado
 
 

@@ -372,6 +372,8 @@ def testar_ajustes_impressao(diretorio: Path) -> None:
     perfil.write_text(
         "fill_density = 12%\n"
         "perimeter_speed = 30\n"
+        "external_perimeter_speed = 50%\n"
+        "layer_height = 0.12\n"
         "temperature = 195\n"
         "bed_temperature = 0\n",
         encoding="utf-8",
@@ -379,13 +381,19 @@ def testar_ajustes_impressao(diretorio: Path) -> None:
     lidos = conv.ler_parametros_impressao(perfil)
     assert lidos["fill_density"] == 12
     assert lidos["infill_speed"] == 35  # padrão quando a chave não existe
+    assert lidos["layer_height"] == 0.12
+    assert lidos["external_perimeter_speed"] == 15  # padrão da GUI, não o %
     assert conv.limitar_impressao("fill_density", 900) == 100
     assert conv.limitar_impressao("temperature", -10) == 180
     assert conv.limitar_impressao("travel_speed", 33.6) == 34
+    assert conv.limitar_impressao("layer_height", 0.01) == 0.08
+    assert conv.limitar_impressao("layer_height", 0.5) == 0.2
 
     valores = {
+        "layer_height": 0.12,
         "fill_density": 40,
         "perimeter_speed": 999,
+        "external_perimeter_speed": 15,
         "infill_speed": 45,
         "travel_speed": 90,
         "temperature": 210,
@@ -398,6 +406,15 @@ def testar_ajustes_impressao(diretorio: Path) -> None:
     assert parametros["perimeter_speed"] == "60"  # limite máximo
     assert parametros["travel_speed"] == "90"
     assert parametros["temperature"] == "210"
+    assert parametros["layer_height"] == "0.12"
+    # 15 mm/s de parede externa com perímetro em 60 mm/s => 25%.
+    assert parametros["external_perimeter_speed"] == "25%"
+    # Com o perímetro padrão (30), 15 mm/s vira os 50% clássicos.
+    valores_padrao = dict(valores, perimeter_speed=30)
+    assert (
+        conv.parametros_config_impressao(valores_padrao)["external_perimeter_speed"]
+        == "50%"
+    )
 
     assert conv.ADERENCIA_MESA_OPCOES == ("None", "Skirt", "Brim", "Raft")
     assert conv.validar_aderencia_mesa("Raft") == "Raft"
@@ -714,6 +731,8 @@ def testar_gui() -> None:
             janela.vars_impressao["fill_density"].set(55)
             janela.vars_impressao["temperature"].set(215)
             janela.vars_impressao["bed_temperature"].set(40)
+            janela.vars_impressao["layer_height"].set(0.12)
+            janela.vars_impressao["external_perimeter_speed"].set(20)
             janela.var_aderencia.set("Raft")
             janela.var_simplificar_pesado.set(True)
             janela.update()
@@ -728,12 +747,17 @@ def testar_gui() -> None:
             resumo = janela.var_resumo_limites.get()
             assert "Hotend: 200 °C (1ª camada) / 215 °C" in resumo
             assert "Mesa: 40 °C" in resumo
+            assert "Camada: 0,12 mm" in resumo
             assert "Preenchimento: 55%" in resumo
+            assert "parede externa 20" in resumo
+            assert "deslocamento 60 mm/s" in resumo
             assert "Simplificação automática: ativada" in resumo
             parametros_gui = conv.parametros_config_impressao(janela._config_impressao())
             assert parametros_gui["temperature"] == "215"
             assert parametros_gui["bed_temperature"] == "40"
             assert parametros_gui["fill_density"] == "55%"
+            assert parametros_gui["layer_height"] == "0.12"
+            assert parametros_gui["external_perimeter_speed"] == "67%"
 
             janela.btn_reset_impressao.invoke()
             janela.update()
@@ -913,6 +937,37 @@ def testar_gui() -> None:
                     if janela.orcamento is None:
                         break
                 assert janela.orcamento is None
+
+                # Uma conversão concluída deve gerar uma única linha de log.
+                # O trace de var_gcode_calculo já calcula; um after adicional
+                # duplicava o "Calc: preço final".
+                with patch.object(janela, "_mostrar_dialogo_pendente"), patch.object(
+                    janela, "_finalizar_sucesso"
+                ):
+                    janela._limpar_log()
+                    analise = conv.AnaliseMalha(
+                        dimensoes_originais=(10.0, 20.0, 5.0),
+                        dimensoes_finais=(10.0, 20.0, 5.0),
+                        fator_escala=1.0,
+                        medida_aplicada=20.0,
+                        partes=1,
+                    )
+                    janela._enfileirar(
+                        (
+                            "sucesso",
+                            conv.ResultadoConversao(
+                                arquivo_entrada=Path("peca.3mf"),
+                                arquivo_gcode=gcode,
+                                analise=analise,
+                            ),
+                        )
+                    )
+                    for _tentativa in range(80):
+                        janela.update()
+                        time.sleep(0.01)
+                assert janela.texto_log.get("1.0", "end").count(
+                    "Calc: preço final"
+                ) == 1
 
                 # Ao limpar o resultado, o botão desaparece junto.
                 janela._limpar_orcamento()

@@ -102,6 +102,14 @@ FILTROS_ARQUIVO: tuple[tuple[str, str], ...] = (
 # (chave, título, unidade, explicação)
 CAMPOS_IMPRESSAO: tuple[tuple[str, str, str, str], ...] = (
     (
+        "layer_height",
+        "Altura da camada",
+        "mm",
+        "Espessura de cada camada. Valores menores reduzem as linhas visíveis "
+        "na superfície e aumentam o tempo de impressão. Entre 0,08 e 0,20 mm; "
+        "0,20 mm é o padrão da K7.",
+    ),
+    (
         "fill_density",
         "Preenchimento",
         "%",
@@ -113,8 +121,16 @@ CAMPOS_IMPRESSAO: tuple[tuple[str, str, str, str], ...] = (
         "perimeter_speed",
         "Velocidade do perímetro",
         "mm/s",
-        "Velocidade das paredes externas. Muito alta pode causar tremida do bico "
-        "e perder definição nos detalhes.",
+        "Velocidade das paredes em geral (internas e externas). Muito alta pode "
+        "causar tremida do bico e perder definição nos detalhes.",
+    ),
+    (
+        "external_perimeter_speed",
+        "Parede externa",
+        "mm/s",
+        "Velocidade somente da parede visível da peça. Deixe mais baixa que o "
+        "perímetro para reduzir tremida e melhorar o acabamento. O valor nunca "
+        "passa da velocidade do perímetro.",
     ),
     (
         "infill_speed",
@@ -125,10 +141,10 @@ CAMPOS_IMPRESSAO: tuple[tuple[str, str, str, str], ...] = (
     ),
     (
         "travel_speed",
-        "Velocidade de viagem",
+        "Deslocamento",
         "mm/s",
-        "Velocidade do bico quando ele se move sem extrudar. Excesso pode causar "
-        "perda de passo dos motores e deslocar a peça.",
+        "Travel Speed: velocidade do bico quando ele se move sem extrudar. "
+        "Excesso pode causar perda de passo dos motores e deslocar a peça.",
     ),
     (
         "temperature",
@@ -161,8 +177,17 @@ CAMPOS_IMPRESSAO: tuple[tuple[str, str, str, str], ...] = (
 )
 
 GRUPOS_IMPRESSAO: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("Qualidade da superfície", ("layer_height",)),
     ("Preenchimento", ("fill_density",)),
-    ("Velocidades", ("perimeter_speed", "infill_speed", "travel_speed")),
+    (
+        "Velocidades",
+        (
+            "perimeter_speed",
+            "external_perimeter_speed",
+            "infill_speed",
+            "travel_speed",
+        ),
+    ),
     (
         "Temperaturas",
         (
@@ -220,7 +245,11 @@ class AppK7(ttk.Window):
         self.var_arquivo = tk.StringVar(value="")
         self.var_tamanho = tk.DoubleVar(value=60.0)
         self.vars_impressao = {
-            chave: tk.IntVar(value=padrao)
+            chave: (
+                tk.DoubleVar(value=padrao)
+                if chave == "layer_height"
+                else tk.IntVar(value=padrao)
+            )
             for chave, (_minimo, _maximo, padrao) in LIMITES_IMPRESSAO.items()
         }
         self.var_aderencia = tk.StringVar(value=ADERENCIA_MESA_PADRAO)
@@ -322,10 +351,11 @@ class AppK7(ttk.Window):
             pass
         return {}
 
-    def _valor_impressao(self, chave: str) -> int:
+    def _valor_impressao(self, chave: str) -> float:
         """Lê um ajuste mesmo enquanto o usuário está digitando no campo."""
         try:
-            return int(self.vars_impressao[chave].get())
+            valor = self.vars_impressao[chave].get()
+            return float(valor) if chave == "layer_height" else int(valor)
         except (ValueError, TypeError, tk.TclError):
             return LIMITES_IMPRESSAO[chave][2]
 
@@ -856,7 +886,7 @@ class AppK7(ttk.Window):
                     linha,
                     from_=minimo,
                     to=maximo,
-                    increment=1,
+                    increment=0.02 if chave == "layer_height" else 1,
                     textvariable=self.vars_impressao[chave],
                     width=8,
                 )
@@ -866,10 +896,25 @@ class AppK7(ttk.Window):
                     lambda _evento, nome=chave: self._ao_sair_campo_impressao(nome),
                 )
 
+                minimo_txt = (
+                    f"{minimo:.2f}".replace(".", ",")
+                    if chave == "layer_height"
+                    else f"{minimo:g}"
+                )
+                maximo_txt = (
+                    f"{maximo:.2f}".replace(".", ",")
+                    if chave == "layer_height"
+                    else f"{maximo:g}"
+                )
+                padrao_txt = (
+                    f"{padrao:.2f}".replace(".", ",")
+                    if chave == "layer_height"
+                    else f"{padrao:g}"
+                )
                 ttk.Label(
                     linha,
-                    text=f"Permitido: {minimo} a {maximo} {unidade}. "
-                    f"Padrão do perfil: {padrao} {unidade}.",
+                    text=f"Permitido: {minimo_txt} a {maximo_txt} {unidade}. "
+                    f"Padrão do perfil: {padrao_txt} {unidade}.",
                     bootstyle="warning",
                     justify="left",
                 ).grid(row=1, column=0, columnspan=3, sticky="w", pady=(4, 0))
@@ -1086,9 +1131,10 @@ class AppK7(ttk.Window):
     def _atualizar_resumo_limites(self) -> None:
         """Mostra na aba Configurações os valores que serão usados no G-code."""
 
-        def valor(chave: str) -> int:
+        def valor(chave: str) -> float:
             return limitar_impressao(chave, self._valor_impressao(chave))
 
+        camada = f"{valor('layer_height'):.2f}".replace(".", ",")
         self.var_resumo_limites.set(
             f"Mesa: {LARGURA_MESA_MM:g} x {PROFUNDIDADE_MESA_MM:g} x "
             f"{ALTURA_MESA_MM:g} mm  |  Tamanho útil: {LIMITE_SEGURANCA_MM:g} mm\n"
@@ -1097,10 +1143,11 @@ class AppK7(ttk.Window):
             f"{valor('temperature')} °C\n"
             f"Mesa: {valor('bed_temperature')} °C "
             f"(1ª camada: {valor('first_layer_bed_temperature')} °C)  |  "
-            f"Camada: 0,2 mm  |  Preenchimento: {valor('fill_density')}%\n"
-            f"Velocidades: perímetro {valor('perimeter_speed')} mm/s  |  "
-            f"preenchimento {valor('infill_speed')} mm/s  |  "
-            f"viagem {valor('travel_speed')} mm/s\n"
+            f"Camada: {camada} mm  |  Preenchimento: {valor('fill_density')}%\n"
+            f"Velocidades: perímetro {valor('perimeter_speed')}  |  "
+            f"parede externa {valor('external_perimeter_speed')}  |  "
+            f"preenchimento {valor('infill_speed')}  |  "
+            f"deslocamento {valor('travel_speed')} mm/s\n"
             f"Triângulos: limite de {MAX_FACES:,} no total  |  "
             f"Simplificação automática: "
             f"{'ativada' if self.var_simplificar_pesado.get() else 'desativada'}  |  "
@@ -1750,12 +1797,10 @@ class AppK7(ttk.Window):
                     self._finalizar_sucesso(item[1])
                     caminho_gcode = str(item[1].arquivo_gcode)
                     self._tempo_manual = False
+                    # O trace de var_gcode_calculo já agenda o cálculo do Calc.
+                    # Um after aqui faria o mesmo G-code ser calculado duas
+                    # vezes e duplicaria a linha "Calc: preço final" no log.
                     self.var_gcode_calculo.set(caminho_gcode)
-                    # Depois do aviso de conclusão, preenche a aba Calc.
-                    self.after(
-                        50,
-                        lambda caminho=caminho_gcode: self._calcular_orcamento(caminho),
-                    )
                     self._dialogo_pendente = (
                         "sucesso",
                         str(item[1].arquivo_gcode),

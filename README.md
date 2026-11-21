@@ -50,7 +50,7 @@ Na aba **Converter**:
 4. Opcionalmente escolha a **pasta de saída** (em branco = mesma pasta do modelo). O nome gerado é `<nome>_K7.gcode`;
 5. Clique em **Converter para G-code**.
 
-O **último tamanho máximo escolhido**, a quantidade de peças, os **ajustes de impressão**, a aderência, a **simplificação automática** e o **diâmetro do suporte** voltam como padrão na próxima execução. Os ajustes de impressão são salvos imediatamente quando você altera um campo; os demais são salvos ao converter ou fechar. O botão **Reset** da aba **Ajustes de impressão** restaura preenchimento, velocidades, temperaturas, aderência à mesa e desliga a simplificação automática. O **Reset** ao lado do campo de suporte restaura apenas o suporte (opção desligada e `0,9 mm` de diâmetro).
+O **último tamanho máximo escolhido**, a quantidade de peças, os **ajustes de impressão**, a aderência, a **simplificação automática** e o **diâmetro do suporte** voltam como padrão na próxima execução. Os ajustes de impressão são salvos imediatamente quando você altera um campo; os demais são salvos ao converter ou fechar. O botão **Reset** da aba **Ajustes de impressão** restaura altura da camada, preenchimento, velocidades, temperaturas, aderência à mesa e desliga a simplificação automática. O **Reset** ao lado do campo de suporte restaura apenas o suporte (opção desligada e `0,9 mm` de diâmetro).
 
 ### Ajustes de impressão
 
@@ -58,16 +58,18 @@ A barra deslizante e as siglas foram removidas. As opções ficam diretamente na
 
 | Nome exibido | Chave do PrusaSlicer | Limite | O que controla |
 | --- | --- | --- | --- |
+| Altura da camada | `layer_height` | `0,08` a `0,20 mm` | Espessura de cada camada. Valores menores reduzem as linhas visíveis na superfície, mas aumentam bastante o tempo de impressão. O padrão da K7 é `0,20 mm`. |
 | Preenchimento | `fill_density` | `5` a `100 %` | Quantidade de plástico no interior da peça. Valores baixos deixam a peça mais oca e rápida; valores altos aumentam resistência, material e tempo. |
-| Velocidade do perímetro | `perimeter_speed` | `10` a `60 mm/s` | Velocidade das paredes externas. Muito alta pode causar tremida e perder definição nos detalhes. |
+| Velocidade do perímetro | `perimeter_speed` | `10` a `60 mm/s` | Velocidade das paredes em geral (internas e externas). Muito alta pode causar tremida e perder definição nos detalhes. |
+| Parede externa | `external_perimeter_speed` | `10` a `60 mm/s` | Velocidade somente da parede visível. O valor em mm/s é convertido para a porcentagem do perímetro usada pelo PrusaSlicer e nunca passa da velocidade do perímetro. Ideal para melhorar o acabamento sem deixar a impressão lenta. |
 | Velocidade do preenchimento | `infill_speed` | `10` a `80 mm/s` | Velocidade das linhas internas. Pode ser maior que a do perímetro, mas em peças pequenas pode não dar tempo de resfriar. |
-| Velocidade de viagem | `travel_speed` | `20` a `120 mm/s` | Movimento do bico sem extrudar. Excesso pode causar perda de passo dos motores e deslocar a peça. |
+| Deslocamento | `travel_speed` | `20` a `120 mm/s` | Travel Speed: movimento do bico sem extrudar. Excesso pode causar perda de passo dos motores e deslocar a peça. |
 | Temperatura do bico | `temperature` | `180` a `230 °C` | Temperatura do hotend. PLA costuma funcionar entre `190 °C` e `210 °C`. |
 | Temperatura do bico na 1ª camada | `first_layer_temperature` | `180` a `230 °C` | Usada somente na primeira camada. Um pouco mais alta ajuda na aderência à mesa. |
 | Temperatura da mesa | `bed_temperature` | `0` a `80 °C` | A K7 comum usa `0 °C`; aumente apenas se o material ou a mesa aquecida pedirem. |
 | Temperatura da mesa na 1ª camada | `first_layer_bed_temperature` | `0` a `80 °C` | Ajuda na aderência da primeira camada. Mantenha `0 °C` sem mesa aquecida. |
 
-Os campos começam com os valores do `k7_config.ini` escolhido e o que você alterar tem prioridade na próxima execução. Cada alteração é salva na hora e aparece imediatamente no painel **Limites aplicados no G-code** da aba **Configurações**; o botão **Reset** à direita do texto “ao final da conversão” restaura todos os campos aos valores padrão. Nesse painel, bico, filamento e altura de camada permanecem fixos, vindos do perfil da K7. Qualquer valor digitado abaixo do mínimo ou acima do máximo é automaticamente limitado ao intervalo. Assim como o suporte, nada é gravado no seu perfil: os valores são aplicados em um `.ini` temporário que é apagado ao final da conversão.
+Os campos começam com os valores do `k7_config.ini` escolhido e o que você alterar tem prioridade na próxima execução. Cada alteração é salva na hora e aparece imediatamente no painel **Limites aplicados no G-code** da aba **Configurações**; o botão **Reset** à direita do texto “ao final da conversão” restaura todos os campos aos valores padrão. Nesse painel, bico e filamento permanecem fixos, vindos do perfil da K7; a altura da camada agora acompanha o campo **Altura da camada**. Qualquer valor digitado abaixo do mínimo ou acima do máximo é automaticamente limitado ao intervalo. Assim como o suporte, nada é gravado no seu perfil: os valores são aplicados em um `.ini` temporário que é apagado ao final da conversão.
 
 ### Aderência à mesa de impressão
 
