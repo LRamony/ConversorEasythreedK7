@@ -56,7 +56,7 @@ O **último tamanho máximo escolhido**, a quantidade de peças, os **ajustes de
 
 A barra deslizante e as siglas foram removidas. As opções ficam diretamente na aba **Ajustes de impressão**, logo após **Converter**. Lá cada opção aparece com nome completo, unidade, limite e uma explicação do efeito na impressão.
 
-No painel **Limites aplicados no G-code** da aba **Configurações**, à direita do resumo, ficam os botões **Exportar ajustes** e **Importar ajustes**, um abaixo do outro. **Exportar ajustes** grava um `.json` com todos os campos da aba **Ajustes de impressão** — altura da camada, preenchimento, velocidades, temperaturas, aderência à mesa e simplificação automática. **Importar ajustes** lê esse arquivo, valida e limita cada valor antes de aplicá-lo; arquivos parciais são aceitos e apenas os campos presentes são alterados. Nenhum dos dois modifica o seu `k7_config.ini`.
+No painel **Limites aplicados no G-code** da aba **Configurações**, à direita do resumo, ficam os botões **Exportar** e **Importar**, um abaixo do outro. **Exportar** grava um `.json` com todos os campos da aba **Ajustes de impressão** — altura da camada, preenchimento, velocidades, temperaturas, aderência à mesa e simplificação automática. **Importar** lê esse arquivo, valida e limita cada valor antes de aplicá-lo; arquivos parciais são aceitos e apenas os campos presentes são alterados. Nenhum dos dois modifica o seu `k7_config.ini`.
 
 | Nome exibido | Chave do PrusaSlicer | Limite | O que controla |
 | --- | --- | --- | --- |

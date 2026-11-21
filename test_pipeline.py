@@ -737,8 +737,8 @@ def testar_gui() -> None:
             assert janela.lbl_resumo_limites in widgets_config
             assert janela.btn_exportar_ajustes in widgets_config
             assert janela.btn_importar_ajustes in widgets_config
-            assert janela.btn_exportar_ajustes.cget("text") == "Exportar ajustes"
-            assert janela.btn_importar_ajustes.cget("text") == "Importar ajustes"
+            assert janela.btn_exportar_ajustes.cget("text") == "Exportar"
+            assert janela.btn_importar_ajustes.cget("text") == "Importar"
             assert janela.btn_exportar_ajustes.master is janela.btn_importar_ajustes.master
             assert (
                 janela.btn_exportar_ajustes.master.master
