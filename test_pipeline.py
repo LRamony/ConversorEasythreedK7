@@ -384,6 +384,7 @@ def testar_ajustes_impressao(diretorio: Path) -> None:
         "top_infill_extrusion_width = 0.38\n"
         "ironing_flowrate = 15%\n"
         "ironing_speed = 18\n"
+        "first_layer_height = 0.35\n"
         "first_layer_extrusion_width = 0.5\n"
         "first_layer_speed = 12\n",
         encoding="utf-8",
@@ -398,6 +399,8 @@ def testar_ajustes_impressao(diretorio: Path) -> None:
     assert lidos["top_fill_pattern"] == "Linhas monotônicas"
     assert lidos["top_solid_layers"] == 5
     assert lidos["top_infill_extrusion_width"] == 0.38
+    # O padrão antigo do fatiador (0,35 mm) é ignorado: a GUI usa 0,20 mm.
+    assert lidos["first_layer_height"] == 0.20
     assert lidos["first_layer_speed"] == 12
     assert conv.limitar_impressao("fill_density", 900) == 100
     assert conv.limitar_impressao("temperature", -10) == 180
@@ -405,6 +408,7 @@ def testar_ajustes_impressao(diretorio: Path) -> None:
     assert conv.limitar_impressao("layer_height", 0.01) == 0.08
     assert conv.limitar_impressao("layer_height", 0.5) == 0.2
     assert conv.limitar_impressao("top_infill_extrusion_width", 0.9) == 0.45
+    assert conv.limitar_impressao("first_layer_height", 0.9) == 0.30
     assert conv.validar_bool_impressao("ironing", "true") is True
     assert conv.validar_bool_impressao("ironing", 0) is False
     assert conv.validar_opcao_impressao("top_fill_pattern", "monotonic") == "Monotônico"
@@ -448,6 +452,7 @@ def testar_ajustes_impressao(diretorio: Path) -> None:
         "top_solid_layers": 5,
         "infill_overlap": 30,
         "top_infill_extrusion_width": 0.38,
+        "first_layer_height": 0.22,
         "first_layer_extrusion_width": 0.5,
         "first_layer_speed": 12,
     }
@@ -471,6 +476,7 @@ def testar_ajustes_impressao(diretorio: Path) -> None:
     assert parametros["top_solid_layers"] == "5"
     assert parametros["infill_overlap"] == "30%"
     assert parametros["top_infill_extrusion_width"] == "0.38"
+    assert parametros["first_layer_height"] == "0.22"
     assert parametros["first_layer_extrusion_width"] == "0.5"
     assert parametros["first_layer_speed"] == "12"
     # 15 mm/s de parede externa com perímetro em 60 mm/s => 25%.
@@ -506,6 +512,7 @@ def testar_ajustes_impressao(diretorio: Path) -> None:
     assert "ironing_type = topmost" in texto
     assert "ironing_flowrate = 12%" in texto
     assert "top_fill_pattern = monotoniclines" in texto
+    assert "first_layer_height = 0.22" in texto
     assert "first_layer_extrusion_width = 0.5" in texto
     assert texto.count("fill_density = ") == 1
 
@@ -533,6 +540,7 @@ def testar_ajustes_impressao(diretorio: Path) -> None:
     assert any("fill_density = 40%" in trecho for trecho in vistos)
     assert any("ironing_type = topmost" in trecho for trecho in vistos)
     assert any("top_fill_pattern = monotoniclines" in trecho for trecho in vistos)
+    assert any("first_layer_height = 0.22" in trecho for trecho in vistos)
     assert any("support_material = 0" in trecho for trecho in vistos)
     assert any("brim_width = 6" in trecho for trecho in vistos)
     assert any("brim_type = outer_only" in trecho for trecho in vistos)
@@ -842,6 +850,7 @@ def testar_gui() -> None:
             janela.vars_impressao["top_solid_layers"].set(5)
             janela.vars_impressao["infill_overlap"].set(30)
             janela.vars_impressao["top_infill_extrusion_width"].set(0.35)
+            janela.vars_impressao["first_layer_height"].set(0.22)
             janela.vars_impressao["first_layer_extrusion_width"].set(0.5)
             janela.vars_impressao["first_layer_speed"].set(12)
             janela.var_aderencia.set("Raft")
@@ -875,6 +884,7 @@ def testar_gui() -> None:
             assert exportado["ironing_flowrate"] == 12
             assert exportado["top_fill_pattern"] == "Linhas monotônicas"
             assert exportado["top_infill_extrusion_width"] == 0.35
+            assert exportado["first_layer_height"] == 0.22
             assert exportado["aderencia_mesa"] == "Raft"
             assert exportado["simplificar_pesado"] is True
 
@@ -895,7 +905,7 @@ def testar_gui() -> None:
             )
             assert "padrão Linhas monotônicas" in resumo
             assert "largura 0,35 mm" in resumo
-            assert "1ª camada: largura 0,50 mm" in resumo
+            assert "1ª camada: altura 0,22 mm  |  largura 0,50 mm" in resumo
             parametros_gui = conv.parametros_config_impressao(janela._config_impressao())
             assert parametros_gui["temperature"] == "215"
             assert parametros_gui["bed_temperature"] == "40"
@@ -905,6 +915,7 @@ def testar_gui() -> None:
             assert parametros_gui["ironing"] == "1"
             assert parametros_gui["ironing_type"] == "top"
             assert parametros_gui["top_fill_pattern"] == "monotoniclines"
+            assert parametros_gui["first_layer_height"] == "0.22"
 
             janela.btn_reset_impressao.invoke()
             janela.update()
@@ -940,6 +951,7 @@ def testar_gui() -> None:
                         "ironing_type": "topmost",
                         "top_fill_pattern": "monotonic",
                         "ironing_speed": 99,
+                        "first_layer_height": 0.5,
                         "aderencia_mesa": "Brim",
                         "simplificar_pesado": True,
                     },
@@ -964,6 +976,7 @@ def testar_gui() -> None:
             )
             assert janela.vars_impressao["top_fill_pattern"].get() == "Monotônico"
             assert janela.vars_impressao["ironing_speed"].get() == conv.LIMITES_IMPRESSAO["ironing_speed"][1]
+            assert janela.vars_impressao["first_layer_height"].get() == conv.LIMITES_IMPRESSAO["first_layer_height"][1]
             assert janela.var_aderencia.get() == "Brim"
             assert janela.var_simplificar_pesado.get() is True
             dados = json.loads(arquivo_prefs.read_text(encoding="utf-8"))
@@ -979,6 +992,7 @@ def testar_gui() -> None:
             assert "Topo: engomar ligado" in resumo
             assert "tipo Apenas superfícies superiores" in resumo
             assert "padrão Monotônico" in resumo
+            assert "1ª camada: altura 0,30 mm" in resumo
 
             # A opção também é repassada ao núcleo na thread de conversão.
             with patch.object(

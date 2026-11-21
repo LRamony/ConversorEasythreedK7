@@ -244,6 +244,14 @@ CAMPOS_IMPRESSAO: tuple[tuple[str, str, str, str], ...] = (
         "olhos e bigode, sem alterar a largura do resto da peça.",
     ),
     (
+        "first_layer_height",
+        "Altura da 1ª camada",
+        "mm",
+        "Altura da camada que toca a mesa. Com bico de 0,4 mm, use 0,20 a "
+        "0,24 mm: a linha fica achatada e gruda melhor. O valor antigo do "
+        "fatiador (0,35 mm) deixa o plástico arredondado e solta fácil.",
+    ),
+    (
         "first_layer_extrusion_width",
         "Largura da extrusão na 1ª camada",
         "mm",
@@ -276,7 +284,11 @@ GRUPOS_IMPRESSAO: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("Qualidade da superfície", ("layer_height",)),
     (
         "Primeira camada",
-        ("first_layer_extrusion_width", "first_layer_speed"),
+        (
+            "first_layer_height",
+            "first_layer_extrusion_width",
+            "first_layer_speed",
+        ),
     ),
     ("Preenchimento", ("fill_density",)),
     (
@@ -1432,7 +1444,8 @@ class AppK7(ttk.Window):
             f"padrão {padrao_topo}  |  camadas sólidas {valor('top_solid_layers')}  |  "
             f"sobreposição {valor('infill_overlap')}%  |  "
             f"largura {mm('top_infill_extrusion_width')} mm\n"
-            f"1ª camada: largura {mm('first_layer_extrusion_width')} mm  |  "
+            f"1ª camada: altura {mm('first_layer_height')} mm  |  "
+            f"largura {mm('first_layer_extrusion_width')} mm  |  "
             f"velocidade {valor('first_layer_speed')} mm/s\n"
             f"Triângulos: limite de {fmt_faces(MAX_FACES)} no total  |  "
             f"Aderência: {self._aderencia_mesa()}  |  "

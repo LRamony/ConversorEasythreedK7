@@ -157,6 +157,7 @@ LIMITES_IMPRESSAO: dict[str, tuple[float, float, float]] = {
     "ironing_flowrate": (5, 30, 15),
     "ironing_speed": (5, 30, 15),
     # Primeira camada.
+    "first_layer_height": (0.10, 0.30, 0.20),
     "first_layer_extrusion_width": (0.40, 0.56, 0.48),
     "first_layer_speed": (5, 30, 10),
 }
@@ -165,6 +166,7 @@ LIMITES_IMPRESSAO: dict[str, tuple[float, float, float]] = {
 CAMPOS_DECIMAIS_IMPRESSAO: frozenset[str] = frozenset(
     {
         "layer_height",
+        "first_layer_height",
         "top_infill_extrusion_width",
         "first_layer_extrusion_width",
     }
@@ -417,6 +419,11 @@ def ler_parametros_impressao(config_ini: str | Path) -> dict[str, object]:
         # No .ini essa chave é porcentagem do perímetro, enquanto a GUI usa
         # mm/s. O valor da interface (ou seu padrão) é a fonte confiável.
         if chave == "external_perimeter_speed":
+            continue
+        # O padrão do PrusaSlicer para esta K7 é 0,35 mm, alto demais para o
+        # bico de 0,4 mm e uma das causas de primeira camada soltando. Quem
+        # quiser outro valor agora ajusta no campo da aba "Ajustes de impressão".
+        if chave == "first_layer_height":
             continue
         try:
             if chave in LIMITES_IMPRESSAO:
