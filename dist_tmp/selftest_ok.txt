@@ -1,4 +1,0 @@
-GUI criada com sucesso.
-Perfil: C:\Users\lucar\AppData\Local\ConversorK7\k7_config.ini
-Perfil encontrado: True
-Simplificação: OK (50 triângulos)
