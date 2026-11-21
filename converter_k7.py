@@ -129,9 +129,9 @@ TIPOS_SUPORTE: dict[str, dict[str, str]] = {
 }
 SUPORTE_PADRAO = "Normal - Grade"
 
-# Ajustes de impressão expostos na aba "Ajustes de impressão".
+# Ajustes numéricos expostos na aba "Ajustes de impressão".
 # chave: (mínimo, máximo, padrão). Velocidades em mm/s, temperaturas em °C,
-# preenchimento em % e altura de camada em mm.
+# preenchimento/fluxo/sobreposição em % e larguras/altura de camada em mm.
 LIMITES_IMPRESSAO: dict[str, tuple[float, float, float]] = {
     "layer_height": (0.08, 0.20, 0.20),
     "fill_density": (5, 100, 15),
@@ -143,7 +143,50 @@ LIMITES_IMPRESSAO: dict[str, tuple[float, float, float]] = {
     "first_layer_temperature": (180, 230, 200),
     "bed_temperature": (0, 80, 0),
     "first_layer_bed_temperature": (0, 80, 0),
+    # Acabamento do topo.
+    "top_solid_layers": (2, 8, 4),
+    "infill_overlap": (10, 40, 30),
+    "top_infill_extrusion_width": (0.32, 0.45, 0.38),
+    "ironing_flowrate": (5, 30, 15),
+    "ironing_speed": (5, 30, 15),
+    # Primeira camada.
+    "first_layer_extrusion_width": (0.40, 0.56, 0.48),
+    "first_layer_speed": (5, 30, 10),
 }
+
+# Campos que precisam de casas decimais; os demais são inteiros.
+CAMPOS_DECIMAIS_IMPRESSAO: frozenset[str] = frozenset(
+    {
+        "layer_height",
+        "top_infill_extrusion_width",
+        "first_layer_extrusion_width",
+    }
+)
+
+# Ajustes booleanos e de escolha, mantidos fora de LIMITES_IMPRESSAO para não
+# forçar números onde a interface usa checkbox/combobox.
+IMPRESSAO_BOOL: tuple[str, ...] = ("ironing",)
+OPCOES_IMPRESSAO: dict[str, tuple[str, ...]] = {
+    "top_fill_pattern": ("Retilíneo", "Monotônico", "Linhas monotônicas"),
+}
+
+# A GUI mostra nomes em português; o .ini do PrusaSlicer usa estes valores.
+_PADRAO_TOPO_PRUSA: dict[str, str] = {
+    "Retilíneo": "rectilinear",
+    "Monotônico": "monotonic",
+    "Linhas monotônicas": "monotoniclines",
+}
+_TOPO_PRUSA_PARA_GUI = {valor: chave for chave, valor in _PADRAO_TOPO_PRUSA.items()}
+
+VALORES_PADRAO_IMPRESSAO: dict[str, object] = {
+    **{
+        chave: padrao
+        for chave, (_minimo, _maximo, padrao) in LIMITES_IMPRESSAO.items()
+    },
+    **{chave: False for chave in IMPRESSAO_BOOL},
+    "top_fill_pattern": OPCOES_IMPRESSAO["top_fill_pattern"][1],
+}
+CHAVES_IMPRESSAO: tuple[str, ...] = tuple(VALORES_PADRAO_IMPRESSAO)
 
 # O PrusaSlicer guarda a velocidade da parede externa como porcentagem da
 # velocidade do perímetro. A GUI mostra mm/s e convertemos ao gravar o .ini.
@@ -267,10 +310,10 @@ def parametros_suporte_fino(diametro_mm: float) -> dict[str, str]:
 
 
 def limitar_impressao(chave: str, valor: float, log: LogFn = _sem_log) -> float:
-    """Aplica o limite seguro de um ajuste rápido.
+    """Aplica o limite seguro de um ajuste numérico.
 
-    Todos os ajustes são inteiros, exceto a altura da camada, que precisa de
-    casas decimais (0,08 a 0,20 mm).
+    Larguras e altura de camada usam duas casas decimais; os demais ajustes
+    são inteiros.
     """
     if chave not in LIMITES_IMPRESSAO:
         raise ErroConversao(f"Ajuste de impressão desconhecido: {chave}")
@@ -282,7 +325,7 @@ def limitar_impressao(chave: str, valor: float, log: LogFn = _sem_log) -> float:
         raise ErroConversao(f"Valor inválido para {chave}: {valor!r}")
 
     minimo, maximo, _padrao = LIMITES_IMPRESSAO[chave]
-    if chave == "layer_height":
+    if chave in CAMPOS_DECIMAIS_IMPRESSAO:
         ajustado = round(numero, 2)
     else:
         ajustado = int(round(numero))
@@ -296,11 +339,41 @@ def limitar_impressao(chave: str, valor: float, log: LogFn = _sem_log) -> float:
     return limitado
 
 
-def ler_parametros_impressao(config_ini: str | Path) -> dict[str, float]:
+def validar_bool_impressao(
+    chave: str, valor: object, log: LogFn = _sem_log
+) -> bool:
+    """Converte um ajuste booleano aceitando valores do JSON e do .ini."""
+    if chave not in IMPRESSAO_BOOL:
+        raise ErroConversao(f"Ajuste booleano desconhecido: {chave}")
+    if isinstance(valor, bool):
+        return valor
+    if isinstance(valor, (int, float)) and float(valor) in (0.0, 1.0):
+        return bool(valor)
+    texto = str(valor).strip().lower()
+    if texto in {"1", "true", "sim", "yes", "on", "ativado"}:
+        return True
+    if texto in {"0", "false", "nao", "não", "no", "off", "desativado"}:
+        return False
+    raise ErroConversao(f"Valor inválido para {chave}: {valor!r}")
+
+
+def validar_opcao_impressao(
+    chave: str, valor: object, log: LogFn = _sem_log
+) -> str:
+    """Valida um combobox, aceitando também o valor cru do PrusaSlicer."""
+    if chave not in OPCOES_IMPRESSAO:
+        raise ErroConversao(f"Opção de impressão desconhecida: {chave}")
+    texto = str(valor).strip()
+    if texto in OPCOES_IMPRESSAO[chave]:
+        return texto
+    if chave == "top_fill_pattern" and texto in _TOPO_PRUSA_PARA_GUI:
+        return _TOPO_PRUSA_PARA_GUI[texto]
+    raise ErroConversao(f"Opção inválida para {chave}: {valor!r}")
+
+
+def ler_parametros_impressao(config_ini: str | Path) -> dict[str, object]:
     """Lê os ajustes de impressão do perfil, com padrões e limites seguros."""
-    valores = {
-        chave: padrao for chave, (_minimo, _maximo, padrao) in LIMITES_IMPRESSAO.items()
-    }
+    valores: dict[str, object] = dict(VALORES_PADRAO_IMPRESSAO)
     try:
         linhas = Path(config_ini).expanduser().read_text(
             encoding="utf-8", errors="replace"
@@ -313,21 +386,26 @@ def ler_parametros_impressao(config_ini: str | Path) -> dict[str, float]:
         if not texto or texto.startswith(("#", ";")) or "=" not in texto:
             continue
         chave, bruto = (parte.strip() for parte in texto.split("=", 1))
-        if chave not in LIMITES_IMPRESSAO:
+        if chave not in CHAVES_IMPRESSAO:
             continue
         # No .ini essa chave é porcentagem do perímetro, enquanto a GUI usa
         # mm/s. O valor da interface (ou seu padrão) é a fonte confiável.
         if chave == "external_perimeter_speed":
             continue
         try:
-            valores[chave] = limitar_impressao(chave, bruto.rstrip("%"))
+            if chave in LIMITES_IMPRESSAO:
+                valores[chave] = limitar_impressao(chave, bruto.rstrip("%"))
+            elif chave in IMPRESSAO_BOOL:
+                valores[chave] = validar_bool_impressao(chave, bruto)
+            else:
+                valores[chave] = validar_opcao_impressao(chave, bruto)
         except ErroConversao:
             continue
     return valores
 
 
 def parametros_config_impressao(
-    valores: dict[str, float], log: LogFn = _sem_log
+    valores: dict[str, object], log: LogFn = _sem_log
 ) -> dict[str, str]:
     """Converte os ajustes da GUI nas chaves correspondentes do PrusaSlicer."""
     resultado: dict[str, str] = {}
@@ -338,7 +416,7 @@ def parametros_config_impressao(
     )
     for chave, (_minimo, _maximo, padrao) in LIMITES_IMPRESSAO.items():
         numero = limitar_impressao(chave, valores.get(chave, padrao), log)
-        if chave == "fill_density":
+        if chave in {"fill_density", "ironing_flowrate", "infill_overlap"}:
             resultado[chave] = f"{numero}%"
         elif chave == "external_perimeter_speed":
             # PrusaSlicer espera "50%" (50% da velocidade do perímetro).
@@ -346,6 +424,23 @@ def parametros_config_impressao(
             resultado[chave] = f"{percentual}%"
         else:
             resultado[chave] = str(numero)
+
+    for chave in IMPRESSAO_BOOL:
+        ativo = validar_bool_impressao(
+            chave, valores.get(chave, VALORES_PADRAO_IMPRESSAO[chave]), log
+        )
+        resultado[chave] = "1" if ativo else "0"
+        if chave == "ironing" and ativo:
+            # "Apenas superfícies superiores" e espaçamento padrão do PrusaSlicer.
+            resultado["ironing_type"] = "topmost"
+            resultado["ironing_spacing"] = "0.1"
+
+    for chave, opcoes in OPCOES_IMPRESSAO.items():
+        escolha = validar_opcao_impressao(
+            chave, valores.get(chave, VALORES_PADRAO_IMPRESSAO[chave]), log
+        )
+        if chave == "top_fill_pattern":
+            resultado[chave] = _PADRAO_TOPO_PRUSA[escolha]
     return resultado
 
 
@@ -794,7 +889,7 @@ def converter_3mf_para_k7(
     quantidade: int = 1,
     suporte_fino: bool = False,
     suporte_fino_mm: float = SUPORTE_FINO_PADRAO_MM,
-    config_impressao: dict[str, float] | None = None,
+    config_impressao: dict[str, object] | None = None,
     aderencia_mesa: str | None = None,
     simplificar_pesado: bool = False,
 ) -> ResultadoConversao:
@@ -883,7 +978,9 @@ def converter_3mf_para_k7(
             log("info", f"Tipo de suporte: {nome_tipo}{detalhe}")
         if config_impressao:
             resumo = ", ".join(
-                f"{chave}={parametros[chave]}" for chave in LIMITES_IMPRESSAO
+                f"{chave}={parametros[chave]}"
+                for chave in CHAVES_IMPRESSAO
+                if chave in parametros
             )
             log("info", f"Ajustes de impressão no perfil temporário: {resumo}")
         if aderencia_mesa is not None:

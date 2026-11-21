@@ -43,13 +43,18 @@ from converter_k7 import (
     ADERENCIA_MESA_OPCOES,
     ADERENCIA_MESA_PADRAO,
     ALTURA_MESA_MM,
+    CAMPOS_DECIMAIS_IMPRESSAO,
+    CHAVES_IMPRESSAO,
     CONFIG_PADRAO,
+    IMPRESSAO_BOOL,
     LARGURA_MESA_MM,
     LIMITES_IMPRESSAO,
     LIMITE_SEGURANCA_MM,
     MAX_FACES,
+    OPCOES_IMPRESSAO,
     PROFUNDIDADE_MESA_MM,
     REDUCAO_QUALIDADE_PERCENTUAL,
+    VALORES_PADRAO_IMPRESSAO,
     EXTRUSAO_SUPORTE_MAX_MM,
     QUANTIDADE_MAXIMA,
     SUPORTE_FINO_MAX_MM,
@@ -65,6 +70,8 @@ from converter_k7 import (
     limitar_impressao,
     ler_parametros_impressao,
     localizar_prusa_cli,
+    validar_bool_impressao,
+    validar_opcao_impressao,
 )
 
 def _pasta_preferencias() -> Path:
@@ -175,10 +182,90 @@ CAMPOS_IMPRESSAO: tuple[tuple[str, str, str, str], ...] = (
         "Temperatura da mesa somente na primeira camada. Ajuda na aderência; "
         "mantenha 0 °C se não houver mesa aquecida.",
     ),
+    (
+        "ironing",
+        "Ativar engomar (Ironing)",
+        "",
+        "O bico quente passa uma segunda vez sobre o topo com muito pouco "
+        "plástico, derretendo as linhas. É o ajuste mais eficaz para deixar a "
+        "superfície lisa em chaveiros e peças decorativas.",
+    ),
+    (
+        "ironing_flowrate",
+        "Fluxo do engomar",
+        "%",
+        "Quantidade de plástico liberada na passada de engomar. Use entre 10% "
+        "e 15%; valores altos podem engrossar o topo novamente.",
+    ),
+    (
+        "ironing_speed",
+        "Velocidade do engomar",
+        "mm/s",
+        "Velocidade da passada final. Entre 15 e 20 mm/s o bico aquece e alisa "
+        "sem arrastar a camada já impressa.",
+    ),
+    (
+        "top_fill_pattern",
+        "Padrão do preenchimento superior",
+        "",
+        "Monotônico desenha todas as linhas do topo na mesma direção e deixa o "
+        "brilho uniforme. Linhas monotônicas são uma variação mais fechada.",
+    ),
+    (
+        "top_solid_layers",
+        "Camadas sólidas superiores",
+        "camadas",
+        "Quantidade de camadas fechadas acima do preenchimento. Use 4 ou 5 "
+        "para o preenchimento interno não aparecer como falha no topo.",
+    ),
+    (
+        "infill_overlap",
+        "Sobreposição com perímetros",
+        "%",
+        "Quanto a linha do topo entra para dentro da parede. Aumentar para 30% "
+        "fecha pequenos vãos entre o vermelho e o amarelo nas bordas.",
+    ),
+    (
+        "top_infill_extrusion_width",
+        "Largura da extrusão no topo",
+        "mm",
+        "Linhas mais finas (0,35 a 0,38 mm) alcançam cantos apertados, como "
+        "olhos e bigode, sem alterar a largura do resto da peça.",
+    ),
+    (
+        "first_layer_extrusion_width",
+        "Largura da extrusão na 1ª camada",
+        "mm",
+        "Linhas mais largas na base (0,48 mm = 120% do bico) forçam o plástico "
+        "a preencher os espaços e melhoram a aderência à mesa.",
+    ),
+    (
+        "first_layer_speed",
+        "Velocidade da 1ª camada",
+        "mm/s",
+        "Base mais lenta (10 a 12 mm/s) derrete por igual, gruda melhor e evita "
+        "que as bordas levantem.",
+    ),
 )
 
 GRUPOS_IMPRESSAO: tuple[tuple[str, tuple[str, ...]], ...] = (
+    (
+        "Acabamento do topo",
+        (
+            "ironing",
+            "ironing_flowrate",
+            "ironing_speed",
+            "top_fill_pattern",
+            "top_solid_layers",
+            "infill_overlap",
+            "top_infill_extrusion_width",
+        ),
+    ),
     ("Qualidade da superfície", ("layer_height",)),
+    (
+        "Primeira camada",
+        ("first_layer_extrusion_width", "first_layer_speed"),
+    ),
     ("Preenchimento", ("fill_density",)),
     (
         "Velocidades",
@@ -246,14 +333,19 @@ class AppK7(ttk.Window):
 
         self.var_arquivo = tk.StringVar(value="")
         self.var_tamanho = tk.DoubleVar(value=60.0)
-        self.vars_impressao = {
-            chave: (
-                tk.DoubleVar(value=padrao)
-                if chave == "layer_height"
-                else tk.IntVar(value=padrao)
-            )
-            for chave, (_minimo, _maximo, padrao) in LIMITES_IMPRESSAO.items()
-        }
+        self.vars_impressao: dict[str, tk.Variable] = {}
+        for chave in CHAVES_IMPRESSAO:
+            if chave in OPCOES_IMPRESSAO:
+                variavel: tk.Variable = tk.StringVar(
+                    value=VALORES_PADRAO_IMPRESSAO[chave]
+                )
+            elif chave in IMPRESSAO_BOOL:
+                variavel = tk.BooleanVar(value=VALORES_PADRAO_IMPRESSAO[chave])
+            elif chave in CAMPOS_DECIMAIS_IMPRESSAO:
+                variavel = tk.DoubleVar(value=VALORES_PADRAO_IMPRESSAO[chave])
+            else:
+                variavel = tk.IntVar(value=VALORES_PADRAO_IMPRESSAO[chave])
+            self.vars_impressao[chave] = variavel
         self.var_aderencia = tk.StringVar(value=ADERENCIA_MESA_PADRAO)
         self.var_simplificar_pesado = tk.BooleanVar(value=False)
         self.var_quantidade = tk.IntVar(value=1)
@@ -353,13 +445,21 @@ class AppK7(ttk.Window):
             pass
         return {}
 
-    def _valor_impressao(self, chave: str) -> float:
+    def _valor_impressao(self, chave: str) -> object:
         """Lê um ajuste mesmo enquanto o usuário está digitando no campo."""
         try:
             valor = self.vars_impressao[chave].get()
-            return float(valor) if chave == "layer_height" else int(valor)
-        except (ValueError, TypeError, tk.TclError):
-            return LIMITES_IMPRESSAO[chave][2]
+            if chave in OPCOES_IMPRESSAO:
+                return validar_opcao_impressao(chave, valor)
+            if chave in IMPRESSAO_BOOL:
+                return validar_bool_impressao(chave, valor)
+            return (
+                float(valor)
+                if chave in CAMPOS_DECIMAIS_IMPRESSAO
+                else int(valor)
+            )
+        except (ErroConversao, ValueError, TypeError, tk.TclError):
+            return VALORES_PADRAO_IMPRESSAO[chave]
 
     def _salvar_config(self) -> None:
         config = self.var_config.get().strip()
@@ -376,7 +476,7 @@ class AppK7(ttk.Window):
             "suporte_fino_mm": self.var_suporte_fino_mm.get(),
             **{
                 chave: self._valor_impressao(chave)
-                for chave in LIMITES_IMPRESSAO
+                for chave in CHAVES_IMPRESSAO
             },
             "aderencia_mesa": self.var_aderencia.get(),
             "simplificar_pesado": self.var_simplificar_pesado.get(),
@@ -411,11 +511,16 @@ class AppK7(ttk.Window):
         # estiver salvo nas preferências tem prioridade. Nada é gravado no .ini.
         valores_perfil = ler_parametros_impressao(self.var_config.get())
         for chave, variavel in self.vars_impressao.items():
+            valor = self.config_salva.get(chave, valores_perfil[chave])
             try:
-                valor = float(self.config_salva[chave])
-            except (KeyError, TypeError, ValueError, tk.TclError):
-                valor = valores_perfil[chave]
-            variavel.set(limitar_impressao(chave, valor))
+                if chave in OPCOES_IMPRESSAO:
+                    variavel.set(validar_opcao_impressao(chave, valor))
+                elif chave in IMPRESSAO_BOOL:
+                    variavel.set(validar_bool_impressao(chave, valor))
+                else:
+                    variavel.set(limitar_impressao(chave, float(valor)))
+            except (ErroConversao, ValueError, TypeError, tk.TclError):
+                variavel.set(VALORES_PADRAO_IMPRESSAO[chave])
 
         aderencia = str(self.config_salva.get("aderencia_mesa", ""))
         self.var_aderencia.set(
@@ -891,7 +996,6 @@ class AppK7(ttk.Window):
         for titulo_grupo, chaves in GRUPOS_IMPRESSAO:
             cartao = self._cartao(pai, titulo_grupo)
             for posicao, chave in enumerate(chaves):
-                minimo, maximo, padrao = LIMITES_IMPRESSAO[chave]
                 titulo, unidade, explicacao = detalhes[chave]
                 linha = ttk.Frame(cartao)
                 linha.pack(fill="x", pady=(0, 10 if posicao < len(chaves) - 1 else 0))
@@ -904,45 +1008,60 @@ class AppK7(ttk.Window):
                 ).grid(row=0, column=0, sticky="w")
                 ttk.Label(
                     linha,
-                    text=f"({unidade})",
+                    text=f"({unidade})" if unidade else "",
                     bootstyle="secondary",
                 ).grid(row=0, column=1, sticky="w", padx=(6, 0))
-                campo = ttk.Spinbox(
-                    linha,
-                    from_=minimo,
-                    to=maximo,
-                    increment=0.02 if chave == "layer_height" else 1,
-                    textvariable=self.vars_impressao[chave],
-                    width=8,
-                )
-                campo.grid(row=0, column=2, sticky="e")
-                campo.bind(
-                    "<FocusOut>",
-                    lambda _evento, nome=chave: self._ao_sair_campo_impressao(nome),
-                )
 
-                minimo_txt = (
-                    f"{minimo:.2f}".replace(".", ",")
-                    if chave == "layer_height"
-                    else f"{minimo:g}"
-                )
-                maximo_txt = (
-                    f"{maximo:.2f}".replace(".", ",")
-                    if chave == "layer_height"
-                    else f"{maximo:g}"
-                )
-                padrao_txt = (
-                    f"{padrao:.2f}".replace(".", ",")
-                    if chave == "layer_height"
-                    else f"{padrao:g}"
-                )
-                ttk.Label(
-                    linha,
-                    text=f"Permitido: {minimo_txt} a {maximo_txt} {unidade}. "
-                    f"Padrão do perfil: {padrao_txt} {unidade}.",
-                    bootstyle="warning",
-                    justify="left",
-                ).grid(row=1, column=0, columnspan=3, sticky="w", pady=(4, 0))
+                intervalo_txt = ""
+                if chave in LIMITES_IMPRESSAO:
+                    minimo, maximo, padrao = LIMITES_IMPRESSAO[chave]
+                    decimal = chave in CAMPOS_DECIMAIS_IMPRESSAO
+                    campo = ttk.Spinbox(
+                        linha,
+                        from_=minimo,
+                        to=maximo,
+                        increment=0.02 if decimal else 1,
+                        textvariable=self.vars_impressao[chave],
+                        width=8,
+                    )
+                    campo.grid(row=0, column=2, sticky="e")
+                    campo.bind(
+                        "<FocusOut>",
+                        lambda _evento, nome=chave: self._ao_sair_campo_impressao(nome),
+                    )
+                    fmt = (lambda valor: f"{valor:.2f}".replace(".", ",")) if decimal else (
+                        lambda valor: f"{valor:g}"
+                    )
+                    intervalo_txt = (
+                        f"Permitido: {fmt(minimo)} a {fmt(maximo)} {unidade}. "
+                        f"Padrão do perfil: {fmt(padrao)} {unidade}."
+                    )
+                elif chave in OPCOES_IMPRESSAO:
+                    campo = ttk.Combobox(
+                        linha,
+                        values=list(OPCOES_IMPRESSAO[chave]),
+                        textvariable=self.vars_impressao[chave],
+                        state="readonly",
+                        width=20,
+                    )
+                    campo.grid(row=0, column=2, sticky="e")
+                    intervalo_txt = "Escolha o padrão aplicado nas camadas superiores."
+                else:
+                    campo = ttk.Checkbutton(
+                        linha,
+                        variable=self.vars_impressao[chave],
+                        bootstyle="success",
+                    )
+                    campo.grid(row=0, column=2, sticky="e")
+                    intervalo_txt = "Desligado por padrão; ligue para alisar o topo."
+
+                if intervalo_txt:
+                    ttk.Label(
+                        linha,
+                        text=intervalo_txt,
+                        bootstyle="warning",
+                        justify="left",
+                    ).grid(row=1, column=0, columnspan=3, sticky="w", pady=(4, 0))
                 ttk.Label(
                     linha,
                     text=explicacao,
@@ -1132,6 +1251,8 @@ class AppK7(ttk.Window):
 
     def _ao_sair_campo_impressao(self, chave: str) -> None:
         """Devolve o campo ao intervalo seguro quando ele perde o foco."""
+        if chave not in LIMITES_IMPRESSAO:
+            return
         variavel = self.vars_impressao[chave]
         try:
             valor = float(variavel.get())
@@ -1140,9 +1261,9 @@ class AppK7(ttk.Window):
         variavel.set(limitar_impressao(chave, valor))
 
     def _reset_impressao(self) -> None:
-        """Restaura preenchimento, velocidades, temperaturas, aderência e simplificação."""
-        for chave, (_minimo, _maximo, padrao) in LIMITES_IMPRESSAO.items():
-            self.vars_impressao[chave].set(padrao)
+        """Restaura todos os ajustes da aba, aderência e simplificação."""
+        for chave, valor in VALORES_PADRAO_IMPRESSAO.items():
+            self.vars_impressao[chave].set(valor)
         self.var_aderencia.set(ADERENCIA_MESA_PADRAO)
         self.var_simplificar_pesado.set(False)
         self._salvar_config()
@@ -1159,7 +1280,7 @@ class AppK7(ttk.Window):
             "versao": 1,
             **{
                 chave: self._valor_impressao(chave)
-                for chave in LIMITES_IMPRESSAO
+                for chave in CHAVES_IMPRESSAO
             },
             "aderencia_mesa": self._aderencia_mesa(),
             "simplificar_pesado": bool(self.var_simplificar_pesado.get()),
@@ -1211,13 +1332,18 @@ class AppK7(ttk.Window):
             Messagebox.show_error(mensagem, "Falha ao importar", parent=self)
             return
 
-        valores: dict[str, float] = {}
-        for chave in LIMITES_IMPRESSAO:
+        valores: dict[str, object] = {}
+        for chave in CHAVES_IMPRESSAO:
             if chave not in dados:
                 continue
             try:
-                valores[chave] = limitar_impressao(chave, dados[chave])
-            except ErroConversao as exc:
+                if chave in OPCOES_IMPRESSAO:
+                    valores[chave] = validar_opcao_impressao(chave, dados[chave])
+                elif chave in IMPRESSAO_BOOL:
+                    valores[chave] = validar_bool_impressao(chave, dados[chave])
+                else:
+                    valores[chave] = limitar_impressao(chave, dados[chave])
+            except (ErroConversao, ValueError, TypeError) as exc:
                 mensagem = f"Ajuste inválido no arquivo: {exc}"
                 self._escrever_log("error", f"Ajustes: {mensagem}")
                 Messagebox.show_error(mensagem, "Falha ao importar", parent=self)
@@ -1260,7 +1386,16 @@ class AppK7(ttk.Window):
         def valor(chave: str) -> float:
             return limitar_impressao(chave, self._valor_impressao(chave))
 
-        camada = f"{valor('layer_height'):.2f}".replace(".", ",")
+        def mm(chave: str) -> str:
+            return f"{valor(chave):.2f}".replace(".", ",")
+
+        camada = mm("layer_height")
+        engomar = validar_bool_impressao(
+            "ironing", self._valor_impressao("ironing")
+        )
+        padrao_topo = validar_opcao_impressao(
+            "top_fill_pattern", self._valor_impressao("top_fill_pattern")
+        )
         self.var_resumo_limites.set(
             f"Mesa: {LARGURA_MESA_MM:g} x {PROFUNDIDADE_MESA_MM:g} x "
             f"{ALTURA_MESA_MM:g} mm  |  Tamanho útil: {LIMITE_SEGURANCA_MM:g} mm\n"
@@ -1274,6 +1409,14 @@ class AppK7(ttk.Window):
             f"parede externa {valor('external_perimeter_speed')}  |  "
             f"preenchimento {valor('infill_speed')}  |  "
             f"deslocamento {valor('travel_speed')} mm/s\n"
+            f"Topo: engomar {'ligado' if engomar else 'desligado'} "
+            f"(fluxo {valor('ironing_flowrate')}%, "
+            f"velocidade {valor('ironing_speed')} mm/s)  |  "
+            f"padrão {padrao_topo}  |  camadas sólidas {valor('top_solid_layers')}  |  "
+            f"sobreposição {valor('infill_overlap')}%  |  "
+            f"largura {mm('top_infill_extrusion_width')} mm\n"
+            f"1ª camada: largura {mm('first_layer_extrusion_width')} mm  |  "
+            f"velocidade {valor('first_layer_speed')} mm/s\n"
             f"Triângulos: limite de {MAX_FACES:,} no total  |  "
             f"Aderência: {self._aderencia_mesa()}  |  "
             f"Simplificação automática: "
@@ -1287,12 +1430,9 @@ class AppK7(ttk.Window):
         self._salvar_config()
         self._atualizar_resumo_limites()
 
-    def _config_impressao(self) -> dict[str, int]:
+    def _config_impressao(self) -> dict[str, object]:
         """Valida todos os ajustes de impressão antes de enviá-los ao fatiador."""
-        return {
-            chave: limitar_impressao(chave, variavel.get())
-            for chave, variavel in self.vars_impressao.items()
-        }
+        return {chave: self._valor_impressao(chave) for chave in CHAVES_IMPRESSAO}
 
     def _ao_mudar_quantidade(self, *_eventos) -> None:
         """Recalcula a prévia quando a quantidade de peças muda."""

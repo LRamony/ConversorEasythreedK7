@@ -50,13 +50,13 @@ Na aba **Converter**:
 4. Opcionalmente escolha a **pasta de saída** (em branco = mesma pasta do modelo). O nome gerado é `<nome>_K7.gcode`;
 5. Clique em **Converter para G-code**.
 
-O **último tamanho máximo escolhido**, a quantidade de peças, os **ajustes de impressão**, a aderência, a **simplificação automática** e o **diâmetro do suporte** voltam como padrão na próxima execução. Os ajustes de impressão são salvos imediatamente quando você altera um campo; os demais são salvos ao converter ou fechar. O botão **Reset** da aba **Ajustes de impressão** restaura altura da camada, preenchimento, velocidades, temperaturas, aderência à mesa e desliga a simplificação automática. O **Reset** ao lado do campo de suporte restaura apenas o suporte (opção desligada e `0,9 mm` de diâmetro).
+O **último tamanho máximo escolhido**, a quantidade de peças, os **ajustes de impressão**, a aderência, a **simplificação automática** e o **diâmetro do suporte** voltam como padrão na próxima execução. Os ajustes de impressão são salvos imediatamente quando você altera um campo; os demais são salvos ao converter ou fechar. O botão **Reset** da aba **Ajustes de impressão** restaura altura da camada, preenchimento, velocidades, temperaturas, acabamento do topo, primeira camada, aderência à mesa e desliga a simplificação automática. O **Reset** ao lado do campo de suporte restaura apenas o suporte (opção desligada e `0,9 mm` de diâmetro).
 
 ### Ajustes de impressão
 
 A barra deslizante e as siglas foram removidas. As opções ficam diretamente na aba **Ajustes de impressão**, logo após **Converter**. Lá cada opção aparece com nome completo, unidade, limite e uma explicação do efeito na impressão.
 
-No painel **Limites aplicados no G-code** da aba **Configurações**, à direita do resumo, ficam os botões **Exportar** e **Importar**, um abaixo do outro. **Exportar** grava um `.json` com todos os campos da aba **Ajustes de impressão** — altura da camada, preenchimento, velocidades, temperaturas, aderência à mesa e simplificação automática. **Importar** lê esse arquivo, valida e limita cada valor antes de aplicá-lo; arquivos parciais são aceitos e apenas os campos presentes são alterados. Nenhum dos dois modifica o seu `k7_config.ini`.
+No painel **Limites aplicados no G-code** da aba **Configurações**, à direita do resumo, ficam os botões **Exportar** e **Importar**, um abaixo do outro. **Exportar** grava um `.json` com todos os campos da aba **Ajustes de impressão** — altura da camada, preenchimento, velocidades, temperaturas, acabamento do topo, primeira camada, aderência à mesa e simplificação automática. **Importar** lê esse arquivo, valida e limita cada valor antes de aplicá-lo; arquivos parciais são aceitos e apenas os campos presentes são alterados. Nenhum dos dois modifica o seu `k7_config.ini`.
 
 | Nome exibido | Chave do PrusaSlicer | Limite | O que controla |
 | --- | --- | --- | --- |
@@ -70,8 +70,19 @@ No painel **Limites aplicados no G-code** da aba **Configurações**, à direita
 | Temperatura do bico na 1ª camada | `first_layer_temperature` | `180` a `230 °C` | Usada somente na primeira camada. Um pouco mais alta ajuda na aderência à mesa. |
 | Temperatura da mesa | `bed_temperature` | `0` a `80 °C` | A K7 comum usa `0 °C`; aumente apenas se o material ou a mesa aquecida pedirem. |
 | Temperatura da mesa na 1ª camada | `first_layer_bed_temperature` | `0` a `80 °C` | Ajuda na aderência da primeira camada. Mantenha `0 °C` sem mesa aquecida. |
+| Ativar engomar (Ironing) | `ironing` / `ironing_type` | ligado ou desligado | Passada extra do bico quente sobre o topo, com `ironing_type = topmost` (apenas a superfície mais alta). É o ajuste mais eficaz para alisar chaveiros; vem desligado. |
+| Fluxo do engomar | `ironing_flowrate` | `5` a `30 %` (padrão `15 %`) | Quantidade de plástico na passada final. Use `10 %` a `15 %`; valores altos engrossam o topo de novo. |
+| Velocidade do engomar | `ironing_speed` | `5` a `30 mm/s` (padrão `15 mm/s`) | `15` a `20 mm/s` costuma derreter e alisar sem arrastar a camada. |
+| Padrão do preenchimento superior | `top_fill_pattern` | Retilíneo, Monotônico ou Linhas monotônicas | Monotônico desenha o topo na mesma direção e deixa o brilho uniforme; é o padrão da interface. O PrusaSlicer usa `monotonic`/`monotoniclines`. |
+| Camadas sólidas superiores | `top_solid_layers` | `2` a `8` (padrão `4`) | `4` ou `5` evitam que o preenchimento interno apareça como falha no topo. |
+| Sobreposição com perímetros | `infill_overlap` | `10` a `40 %` (padrão `30 %`) | Fecha pequenos vãos entre o preenchimento superior e a parede ao redor. |
+| Largura da extrusão no topo | `top_infill_extrusion_width` | `0,32` a `0,45 mm` (padrão `0,38 mm`) | Linhas mais finas alcançam detalhes pequenos, como olhos e bigode, sem mudar o resto da peça. |
+| Largura da extrusão na 1ª camada | `first_layer_extrusion_width` | `0,40` a `0,56 mm` (padrão `0,48 mm`) | `0,48 mm` equivale a `120 %` do bico de `0,4 mm` e ajuda a preencher a base. |
+| Velocidade da 1ª camada | `first_layer_speed` | `5` a `30 mm/s` (padrão `10 mm/s`) | `10` a `12 mm/s` melhora a fusão e a aderência da base. |
 
-Os campos começam com os valores do `k7_config.ini` escolhido e o que você alterar tem prioridade na próxima execução. Cada alteração é salva na hora e aparece imediatamente no painel **Limites aplicados no G-code** da aba **Configurações**, incluindo a **Aderência à mesa de impressão** escolhida; o botão **Reset** à direita do texto “ao final da conversão” restaura todos os campos aos valores padrão. Nesse painel, bico e filamento permanecem fixos, vindos do perfil da K7; a altura da camada agora acompanha o campo **Altura da camada**. Qualquer valor digitado abaixo do mínimo ou acima do máximo é automaticamente limitado ao intervalo. Assim como o suporte, nada é gravado no seu perfil: os valores são aplicados em um `.ini` temporário que é apagado ao final da conversão.
+Para chaveiros com linhas muito visíveis no topo, comece com **engomar ligado**, fluxo `12 % a 15 %`, velocidade `15 a 18 mm/s`, padrão **Monotônico**, `4` ou `5` camadas sólidas, sobreposição `30 %` e largura do topo `0,35 mm` ou `0,38 mm`. O **Z-Offset** não foi incluído de propósito: ele é calibração da impressora, não fatiamento, e um valor negativo pode raspar a mesa ou cortar a extrusão.
+
+Os campos começam com os valores do `k7_config.ini` escolhido e o que você alterar tem prioridade na próxima execução. Cada alteração é salva na hora e aparece imediatamente no painel **Limites aplicados no G-code** da aba **Configurações**, incluindo acabamento do topo, primeira camada e a **Aderência à mesa de impressão** escolhida; o botão **Reset** à direita do texto “ao final da conversão” restaura todos os campos aos valores padrão. Nesse painel, bico e filamento permanecem fixos, vindos do perfil da K7; a altura da camada agora acompanha o campo **Altura da camada**. Qualquer valor digitado abaixo do mínimo ou acima do máximo é automaticamente limitado ao intervalo. Assim como o suporte, nada é gravado no seu perfil: os valores são aplicados em um `.ini` temporário que é apagado ao final da conversão.
 
 ### Aderência à mesa de impressão
 
