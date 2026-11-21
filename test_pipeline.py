@@ -727,6 +727,28 @@ def testar_gui() -> None:
             assert janela.btn_reset_impressao.cget("text") == "Reset"
             assert janela.btn_reset_impressao.winfo_manager() == "grid"
 
+            # Importar/exportar ficam dentro de "Limites aplicados no G-code",
+            # na aba Configurações, à direita do resumo e empilhados.
+            janela.abas.select(2)
+            janela.update_idletasks()
+            janela.update()
+            aba_config = janela.abas.nametowidget(janela.abas.select())
+            widgets_config = list(descendentes(aba_config))
+            assert janela.lbl_resumo_limites in widgets_config
+            assert janela.btn_exportar_ajustes in widgets_config
+            assert janela.btn_importar_ajustes in widgets_config
+            assert janela.btn_exportar_ajustes.cget("text") == "Exportar ajustes"
+            assert janela.btn_importar_ajustes.cget("text") == "Importar ajustes"
+            assert janela.btn_exportar_ajustes.master is janela.btn_importar_ajustes.master
+            assert (
+                janela.btn_exportar_ajustes.master.master
+                is janela.lbl_resumo_limites.master
+            )
+            assert janela.lbl_resumo_limites.grid_info()["column"] == 0
+            assert janela.btn_exportar_ajustes.master.grid_info()["column"] == 1
+            janela.abas.select(1)
+            janela.update_idletasks()
+
             # Alterar um ajuste salva na hora; Reset volta ao padrão e salva.
             janela.vars_impressao["fill_density"].set(55)
             janela.vars_impressao["temperature"].set(215)
@@ -742,6 +764,26 @@ def testar_gui() -> None:
             assert dados["simplificar_pesado"] is True
             assert janela._aderencia_mesa() == "Raft"
 
+            # Exportar grava somente as opções da aba Ajustes de impressão.
+            arquivo_exportado = Path(pasta_prefs) / "k7_exportado.json"
+            with patch.object(
+                app_modulo.filedialog,
+                "asksaveasfilename",
+                return_value=str(arquivo_exportado),
+            ):
+                janela.btn_exportar_ajustes.invoke()
+            exportado = json.loads(arquivo_exportado.read_text(encoding="utf-8"))
+            assert set(exportado) == set(conv.LIMITES_IMPRESSAO) | {
+                "versao",
+                "aderencia_mesa",
+                "simplificar_pesado",
+            }
+            assert exportado["layer_height"] == 0.12
+            assert exportado["fill_density"] == 55
+            assert exportado["external_perimeter_speed"] == 20
+            assert exportado["aderencia_mesa"] == "Raft"
+            assert exportado["simplificar_pesado"] is True
+
             # O resumo da aba Configurações acompanha os ajustes e o núcleo
             # recebe exatamente esses valores para gravar no .ini temporário.
             resumo = janela.var_resumo_limites.get()
@@ -751,6 +793,7 @@ def testar_gui() -> None:
             assert "Preenchimento: 55%" in resumo
             assert "parede externa 20" in resumo
             assert "deslocamento 60 mm/s" in resumo
+            assert "Aderência: Raft" in resumo
             assert "Simplificação automática: ativada" in resumo
             parametros_gui = conv.parametros_config_impressao(janela._config_impressao())
             assert parametros_gui["temperature"] == "215"
@@ -776,7 +819,49 @@ def testar_gui() -> None:
             assert "Hotend: 200 °C (1ª camada) / 195 °C" in resumo
             assert "Mesa: 0 °C" in resumo
             assert "Preenchimento: 15%" in resumo
+            assert "Aderência: Skirt" in resumo
             assert "Simplificação automática: desativada" in resumo
+
+            # Importar aplica um arquivo .json parcial, validando os limites.
+            arquivo_importado = Path(pasta_prefs) / "k7_importado.json"
+            arquivo_importado.write_text(
+                json.dumps(
+                    {
+                        "versao": 1,
+                        "layer_height": 0.1,
+                        "fill_density": 42,
+                        "external_perimeter_speed": 18,
+                        "travel_speed": 999,
+                        "aderencia_mesa": "Brim",
+                        "simplificar_pesado": True,
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+            with patch.object(
+                app_modulo.filedialog,
+                "askopenfilename",
+                return_value=str(arquivo_importado),
+            ):
+                janela.btn_importar_ajustes.invoke()
+            janela.update()
+            assert janela.vars_impressao["layer_height"].get() == 0.1
+            assert janela.vars_impressao["fill_density"].get() == 42
+            assert janela.vars_impressao["external_perimeter_speed"].get() == 18
+            assert janela.vars_impressao["travel_speed"].get() == conv.LIMITES_IMPRESSAO["travel_speed"][1]
+            assert janela.var_aderencia.get() == "Brim"
+            assert janela.var_simplificar_pesado.get() is True
+            dados = json.loads(arquivo_prefs.read_text(encoding="utf-8"))
+            assert dados["fill_density"] == 42
+            assert dados["aderencia_mesa"] == "Brim"
+            assert dados["simplificar_pesado"] is True
+            resumo = janela.var_resumo_limites.get()
+            assert "Camada: 0,10 mm" in resumo
+            assert "Preenchimento: 42%" in resumo
+            assert "deslocamento 120 mm/s" in resumo
+            assert "Aderência: Brim" in resumo
+            assert "Simplificação automática: ativada" in resumo
 
             # A opção também é repassada ao núcleo na thread de conversão.
             with patch.object(

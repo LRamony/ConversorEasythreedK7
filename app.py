@@ -58,6 +58,7 @@ from converter_k7 import (
     SUPORTE_PADRAO,
     TIPOS_SUPORTE,
     AnaliseMalha,
+    ErroConversao,
     ResultadoConversao,
     analisar_arquivo,
     converter_3mf_para_k7,
@@ -241,6 +242,7 @@ class AppK7(ttk.Window):
         self._calculando = False
         self._tempo_manual = False
         self._sincronizando_tempo = False
+        self._importando_ajustes = False
 
         self.var_arquivo = tk.StringVar(value="")
         self.var_tamanho = tk.DoubleVar(value=60.0)
@@ -784,13 +786,36 @@ class AppK7(ttk.Window):
         ).grid(row=3, column=0, columnspan=2, sticky="w", pady=(8, 0))
 
         cartao_limites = self._cartao(aba, "Limites aplicados no G-code")
-        ttk.Label(
-            cartao_limites,
+        linha_limites = ttk.Frame(cartao_limites)
+        linha_limites.pack(fill="x")
+        linha_limites.columnconfigure(0, weight=1)
+        self.lbl_resumo_limites = ttk.Label(
+            linha_limites,
             textvariable=self.var_resumo_limites,
             bootstyle="secondary",
-            wraplength=850,
+            wraplength=660,
             justify="left",
-        ).pack(anchor="w")
+        )
+        self.lbl_resumo_limites.grid(row=0, column=0, sticky="nw")
+
+        acoes_limites = ttk.Frame(linha_limites)
+        acoes_limites.grid(row=0, column=1, sticky="ne", padx=(16, 0))
+        self.btn_exportar_ajustes = ttk.Button(
+            acoes_limites,
+            text="Exportar",
+            bootstyle="secondary-outline",
+            command=self._exportar_ajustes,
+            width=20,
+        )
+        self.btn_exportar_ajustes.pack(fill="x")
+        self.btn_importar_ajustes = ttk.Button(
+            acoes_limites,
+            text="Importar",
+            bootstyle="secondary-outline",
+            command=self._importar_ajustes,
+            width=20,
+        )
+        self.btn_importar_ajustes.pack(fill="x", pady=(6, 0))
 
     def _construir_aba_impressao(self, aba: ttk.Frame) -> None:
         """Mostra preenchimento, velocidades e temperaturas com nomes completos."""
@@ -1128,6 +1153,107 @@ class AppK7(ttk.Window):
         valor = self.var_aderencia.get()
         return valor if valor in ADERENCIA_MESA_OPCOES else ADERENCIA_MESA_PADRAO
 
+    def _ajustes_exportaveis(self) -> dict[str, object]:
+        """Apenas as opções da aba Ajustes de impressão, prontas para JSON."""
+        return {
+            "versao": 1,
+            **{
+                chave: self._valor_impressao(chave)
+                for chave in LIMITES_IMPRESSAO
+            },
+            "aderencia_mesa": self._aderencia_mesa(),
+            "simplificar_pesado": bool(self.var_simplificar_pesado.get()),
+        }
+
+    def _exportar_ajustes(self) -> None:
+        caminho = filedialog.asksaveasfilename(
+            parent=self,
+            title="Exportar ajustes de impressão",
+            defaultextension=".json",
+            filetypes=[("Ajustes K7", "*.json"), ("Todos os arquivos", "*.*")],
+            initialfile="k7_ajustes_impressao.json",
+        )
+        if not caminho:
+            return
+        try:
+            Path(caminho).write_text(
+                json.dumps(
+                    self._ajustes_exportaveis(), indent=2, ensure_ascii=False
+                ),
+                encoding="utf-8",
+            )
+        except OSError as exc:
+            mensagem = f"Não foi possível exportar os ajustes: {exc}"
+            self._escrever_log("error", f"Ajustes: {mensagem}")
+            Messagebox.show_error(mensagem, "Falha ao exportar", parent=self)
+            return
+        self._escrever_log("success", f"Ajustes exportados para: {caminho}")
+        self.var_status.set("Ajustes de impressão exportados.")
+
+    def _importar_ajustes(self) -> None:
+        caminho = filedialog.askopenfilename(
+            parent=self,
+            title="Importar ajustes de impressão",
+            filetypes=[("Ajustes K7", "*.json"), ("Todos os arquivos", "*.*")],
+        )
+        if not caminho:
+            return
+        try:
+            dados = json.loads(Path(caminho).read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+            mensagem = f"Não foi possível ler o arquivo de ajustes: {exc}"
+            self._escrever_log("error", f"Ajustes: {mensagem}")
+            Messagebox.show_error(mensagem, "Falha ao importar", parent=self)
+            return
+        if not isinstance(dados, dict):
+            mensagem = "O arquivo de ajustes deve conter um objeto JSON."
+            self._escrever_log("error", f"Ajustes: {mensagem}")
+            Messagebox.show_error(mensagem, "Falha ao importar", parent=self)
+            return
+
+        valores: dict[str, float] = {}
+        for chave in LIMITES_IMPRESSAO:
+            if chave not in dados:
+                continue
+            try:
+                valores[chave] = limitar_impressao(chave, dados[chave])
+            except ErroConversao as exc:
+                mensagem = f"Ajuste inválido no arquivo: {exc}"
+                self._escrever_log("error", f"Ajustes: {mensagem}")
+                Messagebox.show_error(mensagem, "Falha ao importar", parent=self)
+                return
+
+        aderencia = dados.get("aderencia_mesa")
+        if aderencia is not None:
+            aderencia = str(aderencia)
+            if aderencia not in ADERENCIA_MESA_OPCOES:
+                mensagem = f"Aderência à mesa desconhecida: {aderencia}"
+                self._escrever_log("error", f"Ajustes: {mensagem}")
+                Messagebox.show_error(mensagem, "Falha ao importar", parent=self)
+                return
+
+        simplificar = dados.get("simplificar_pesado")
+        if simplificar is not None and not isinstance(simplificar, bool):
+            mensagem = "O campo 'simplificar_pesado' deve ser verdadeiro ou falso."
+            self._escrever_log("error", f"Ajustes: {mensagem}")
+            Messagebox.show_error(mensagem, "Falha ao importar", parent=self)
+            return
+
+        self._importando_ajustes = True
+        try:
+            for chave, valor in valores.items():
+                self.vars_impressao[chave].set(valor)
+            if aderencia is not None:
+                self.var_aderencia.set(aderencia)
+            if simplificar is not None:
+                self.var_simplificar_pesado.set(simplificar)
+        finally:
+            self._importando_ajustes = False
+        self._salvar_config()
+        self._atualizar_resumo_limites()
+        self._escrever_log("success", f"Ajustes importados de: {caminho}")
+        self.var_status.set("Ajustes de impressão importados.")
+
     def _atualizar_resumo_limites(self) -> None:
         """Mostra na aba Configurações os valores que serão usados no G-code."""
 
@@ -1149,12 +1275,15 @@ class AppK7(ttk.Window):
             f"preenchimento {valor('infill_speed')}  |  "
             f"deslocamento {valor('travel_speed')} mm/s\n"
             f"Triângulos: limite de {MAX_FACES:,} no total  |  "
+            f"Aderência: {self._aderencia_mesa()}  |  "
             f"Simplificação automática: "
             f"{'ativada' if self.var_simplificar_pesado.get() else 'desativada'}  |  "
             "Suporte: escolhido na aba Converter"
         )
 
     def _ao_mudar_impressao(self, *_eventos) -> None:
+        if self._importando_ajustes:
+            return
         self._salvar_config()
         self._atualizar_resumo_limites()
 
